@@ -20,7 +20,7 @@ GitHub Actions ── daily ──▶ POST /api/cron/billing        Razorpay ─
    ```bash
    doctl databases create corpus365-db --engine pg --version 16 --region blr1 --size db-s-1vcpu-1gb --num-nodes 1
    ```
-2. **GitHub access.** In App Platform, connect GitHub and allow DigitalOcean on `janani-asokan/corpus365`.
+2. **GitHub access.** In App Platform, connect GitHub and allow DigitalOcean on `Janani-asokan/Corpus365`.
 3. **Create the app** from the spec:
    ```bash
    doctl apps create --spec .do/app.yaml

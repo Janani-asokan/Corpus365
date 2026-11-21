@@ -17,7 +17,7 @@ databases:
 services:
   - name: web
     github:
-      repo: janani-asokan/corpus365
+      repo: Janani-asokan/Corpus365
       branch: main
       deploy_on_push: true
     dockerfile_path: Dockerfile
@@ -46,7 +46,7 @@ jobs:
   - name: migrate
     kind: PRE_DEPLOY
     github:
-      repo: janani-asokan/corpus365
+      repo: Janani-asokan/Corpus365
       branch: main
       deploy_on_push: true
     dockerfile_path: Dockerfile
