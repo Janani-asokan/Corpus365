@@ -122,7 +122,15 @@ export const orders = sqliteTable(
     subtotal: integer("subtotal").notNull(),
     tax: integer("tax").notNull(),
     total: integer("total").notNull(),
+    /** Provider's payment id once paid (e.g. Razorpay pay_…). */
     paymentReference: text("payment_reference"),
+    paymentProvider: text("payment_provider"),
+    /** Provider-side order / payment-link id, used to match webhooks and callbacks. */
+    providerOrderId: text("provider_order_id").unique(),
+    /** Hosted payment page for renewals billed by link. */
+    paymentUrl: text("payment_url"),
+    /** Subscription a renewal order extends. */
+    subscriptionId: text("subscription_id"),
     billingName: text("billing_name").notNull(),
     billingCompany: text("billing_company"),
     billingGstin: text("billing_gstin"),

@@ -33,7 +33,13 @@ export default async function OrdersPage() {
                   <Td>{humanize(order.kind)}</Td>
                   <Td><StatusBadge status={order.status} /></Td>
                   <Td className="text-right tabular-nums">{formatMoney(order.total, 2)}</Td>
-                  <Td className="text-right"><Link href={`/invoices/${order.id}`} className="font-medium text-brand hover:underline">Invoice</Link></Td>
+                  <Td className="text-right whitespace-nowrap">
+                    {order.status === "pending" && order.paymentUrl ? (
+                      <a href={order.paymentUrl} target="_blank" rel="noopener noreferrer" className="font-medium text-brand hover:underline">Pay now</a>
+                    ) : (
+                      <Link href={`/invoices/${order.id}`} className="font-medium text-brand hover:underline">Invoice</Link>
+                    )}
+                  </Td>
                 </tr>
               ))}
             </tbody>

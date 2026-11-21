@@ -1,4 +1,4 @@
-import { and, count, desc, eq, inArray, isNull, lte, ne } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db, type Tx } from "@/server/db/client";
 import {
   licenceKeys,
@@ -15,17 +15,21 @@ import {
   type Subscription,
 } from "@/server/db/schema";
 import { addDays, addInterval, computeTotals, unitPriceForQuantity } from "@/domain/pricing";
-import { formatMoney } from "@/domain/money";
 import type { OrderKind } from "@/domain/constants";
-import { paymentGateway } from "@/server/payments";
-import { getMailer } from "@/server/mail/mailer";
 import { UserFacingError } from "@/lib/errors";
 import { licenceKey } from "@/lib/random";
-import { config } from "@/lib/config";
-import { recordCommissions, type PaidLine } from "./commission.service";
 import { findApprovedPartnerByCode, getPartnerProfile } from "./partner.service";
 import { listPartnerCatalog } from "./catalog.service";
 import { audit } from "./audit.service";
+import { beginPayment, type Payer, type PaymentOutcome } from "./payment.service";
+
+export type { PaymentOutcome };
+
+/**
+ * Order use cases. Each creates a pending order with server-side prices, then
+ * hands it to the payment service; fulfilment happens once payment is confirmed
+ * (instantly in test mode, after Razorpay checkout or webhook otherwise).
+ */
 
 const MAX_HARDWARE_QUANTITY = 50;
 const MAX_BULK_QUANTITY = 1000;
@@ -43,12 +47,6 @@ export interface PricedLine {
   unitPrice: number;
   lineTotal: number;
   description: string;
-}
-
-interface Buyer {
-  id: string;
-  email: string;
-  name: string;
 }
 
 /* ------------------------------------------------------------------ pricing */
@@ -138,14 +136,24 @@ function nextOrderNumber(tx: Tx): string {
   return `C365-${String(1001 + total).padStart(6, "0")}`;
 }
 
-function createPendingOrder(
+interface NewOrderLine {
+  productId: string;
+  planId: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+}
+
+export function createPendingOrder(
   tx: Tx,
   input: {
     userId: string;
     partnerId: string | null;
     kind: OrderKind;
-    lines: { productId: string; planId: string | null; description: string; quantity: number; unitPrice: number; lineTotal: number }[];
+    lines: NewOrderLine[];
     billing: { billingName: string; billingCompany?: string | null; billingGstin?: string | null };
+    subscriptionId?: string | null;
     now: Date;
   },
 ): Order {
@@ -162,6 +170,7 @@ function createPendingOrder(
       billingName: input.billing.billingName,
       billingCompany: input.billing.billingCompany ?? null,
       billingGstin: input.billing.billingGstin ?? null,
+      subscriptionId: input.subscriptionId ?? null,
       createdAt: input.now,
     })
     .returning()
@@ -172,36 +181,16 @@ function createPendingOrder(
   return order;
 }
 
-/** Collects payment for a pending order; marks it failed and throws if declined. */
-async function collectPayment(order: Order, buyer: Buyer, description: string): Promise<string> {
-  const result = await paymentGateway().charge({
-    amount: order.total,
-    currency: "INR",
-    reference: order.number,
-    description,
-    customerEmail: buyer.email,
-  });
-  if (!result.ok) {
-    db.update(orders).set({ status: "failed" }).where(eq(orders.id, order.id)).run();
-    throw new UserFacingError(`Payment was not completed: ${result.reason}`);
-  }
-  return result.providerReference;
-}
-
-function markPaid(tx: Tx, orderId: string, paymentReference: string, now: Date): void {
-  tx.update(orders).set({ status: "paid", paidAt: now, paymentReference }).where(eq(orders.id, orderId)).run();
-}
-
 /* --------------------------------------------------------- retail checkout */
 
 export async function checkout(input: {
-  buyer: Buyer;
+  buyer: Payer;
   lines: readonly CartLine[];
   billing: { billingName: string; billingCompany?: string | null; billingGstin?: string | null };
   partnerCode?: string | null;
   referralCookie?: string | null;
   now?: Date;
-}): Promise<Order> {
+}): Promise<PaymentOutcome> {
   const now = input.now ?? new Date();
   const priced = priceRetailLines(input.lines);
   if (priced.length === 0) throw new UserFacingError("Your cart is empty or its items are no longer available.");
@@ -211,13 +200,7 @@ export async function checkout(input: {
       const active = tx
         .select({ id: subscriptions.id })
         .from(subscriptions)
-        .where(
-          and(
-            eq(subscriptions.userId, input.buyer.id),
-            eq(subscriptions.productId, line.product.id),
-            eq(subscriptions.status, "active"),
-          ),
-        )
+        .where(and(eq(subscriptions.userId, input.buyer.id), eq(subscriptions.productId, line.product.id), eq(subscriptions.status, "active")))
         .get();
       if (active) {
         throw new UserFacingError(`You already have an active ${line.product.name} subscription. Renew it from your account instead.`);
@@ -242,93 +225,7 @@ export async function checkout(input: {
     });
   });
 
-  const paymentReference = await collectPayment(order, input.buyer, `Corpus365 order ${order.number}`);
-  db.transaction((tx) => fulfilRetailOrder(tx, order, paymentReference, now));
-  await sendReceipt(input.buyer, order);
-  return order;
-}
-
-/** Activates subscriptions and records partner commission for a paid order. */
-function fulfilRetailOrder(tx: Tx, order: Order, paymentReference: string, now: Date): void {
-  markPaid(tx, order.id, paymentReference, now);
-
-  const items = tx
-    .select({ item: orderItems, product: products, plan: plans })
-    .from(orderItems)
-    .innerJoin(products, eq(products.id, orderItems.productId))
-    .leftJoin(plans, eq(plans.id, orderItems.planId))
-    .where(eq(orderItems.orderId, order.id))
-    .all();
-
-  const paidLines: PaidLine[] = [];
-  for (const { item, product, plan } of items) {
-    let subscriptionId: string | null = null;
-    if (product.type === "app" && plan) {
-      subscriptionId = activateSubscription(tx, { userId: order.userId, product, plan, partnerId: order.partnerId, now });
-    }
-    paidLines.push({
-      productType: product.type,
-      netAmount: item.lineTotal,
-      hardwareMargin: product.hardwareMargin,
-      description: item.description,
-      subscriptionId,
-    });
-  }
-
-  if (order.partnerId) {
-    recordCommissions(tx, { orderId: order.id, partnerId: order.partnerId, isRenewal: false, lines: paidLines, now });
-  }
-}
-
-/** Converts an existing trial (or lapsed subscription) or creates a new one. */
-function activateSubscription(
-  tx: Tx,
-  input: { userId: string; product: Product; plan: Plan; partnerId: string | null; now: Date },
-): string {
-  const periodEnd = addInterval(input.now, input.plan.interval);
-  const existing = tx
-    .select()
-    .from(subscriptions)
-    .where(
-      and(
-        eq(subscriptions.userId, input.userId),
-        eq(subscriptions.productId, input.product.id),
-        ne(subscriptions.status, "active"),
-      ),
-    )
-    .orderBy(desc(subscriptions.createdAt))
-    .get();
-
-  if (existing) {
-    tx.update(subscriptions)
-      .set({
-        status: "active",
-        planId: input.plan.id,
-        partnerId: input.partnerId ?? existing.partnerId,
-        currentPeriodStart: input.now,
-        currentPeriodEnd: periodEnd,
-        cancelAtPeriodEnd: false,
-      })
-      .where(eq(subscriptions.id, existing.id))
-      .run();
-    return existing.id;
-  }
-
-  return tx
-    .insert(subscriptions)
-    .values({
-      userId: input.userId,
-      productId: input.product.id,
-      planId: input.plan.id,
-      partnerId: input.partnerId,
-      status: "active",
-      licenseKey: licenceKey(),
-      currentPeriodStart: input.now,
-      currentPeriodEnd: periodEnd,
-      createdAt: input.now,
-    })
-    .returning({ id: subscriptions.id })
-    .get().id;
+  return beginPayment(order, input.buyer, `Corpus365 order ${order.number}`, now);
 }
 
 /* ------------------------------------------------------------------ trials */
@@ -368,78 +265,53 @@ export function startTrial(input: { userId: string; productId: string; referralC
 
 /* ---------------------------------------------------------------- renewals */
 
-/** Charges for the next period and extends it. Earns the partner a renewal commission. */
-export async function renewSubscription(input: { subscriptionId: string; userId?: string; now?: Date }): Promise<Order> {
-  const now = input.now ?? new Date();
+/** Creates (but does not charge) the renewal order for a paid subscription. */
+export function createRenewalOrder(subscriptionId: string, now: Date, userId?: string): { order: Order; payer: Payer; description: string } {
   const row = db
     .select({ subscription: subscriptions, plan: plans, product: products, user: users })
     .from(subscriptions)
     .innerJoin(products, eq(products.id, subscriptions.productId))
     .innerJoin(users, eq(users.id, subscriptions.userId))
     .leftJoin(plans, eq(plans.id, subscriptions.planId))
-    .where(eq(subscriptions.id, input.subscriptionId))
+    .where(eq(subscriptions.id, subscriptionId))
     .get();
 
-  if (!row || (input.userId && row.subscription.userId !== input.userId)) throw new UserFacingError("Subscription not found.");
+  if (!row || (userId && row.subscription.userId !== userId)) throw new UserFacingError("Subscription not found.");
   const { subscription, plan, product, user } = row;
-  if (!plan) throw new UserFacingError("Choose a plan to continue after your trial.");
-  if (subscription.status === "trialing") throw new UserFacingError("Choose a plan to continue after your trial.");
+  if (!plan || subscription.status === "trialing") throw new UserFacingError("Choose a plan to continue after your trial.");
 
+  const description = `${product.name} · ${plan.name} renewal`;
   const order = db.transaction((tx) =>
     createPendingOrder(tx, {
       userId: user.id,
       partnerId: subscription.partnerId,
       kind: "renewal",
+      subscriptionId: subscription.id,
       billing: { billingName: user.name, billingCompany: user.companyName },
       now,
-      lines: [
-        {
-          productId: product.id,
-          planId: plan.id,
-          description: `${product.name} · ${plan.name} renewal`,
-          quantity: 1,
-          unitPrice: plan.price,
-          lineTotal: plan.price,
-        },
-      ],
+      lines: [{ productId: product.id, planId: plan.id, description, quantity: 1, unitPrice: plan.price, lineTotal: plan.price }],
     }),
   );
+  return { order, payer: user, description };
+}
 
-  const paymentReference = await collectPayment(order, user, `Renewal ${order.number}`);
-  db.transaction((tx) => {
-    markPaid(tx, order.id, paymentReference, now);
-    const start = subscription.status === "active" && subscription.currentPeriodEnd > now ? subscription.currentPeriodEnd : now;
-    tx.update(subscriptions)
-      .set({
-        status: "active",
-        currentPeriodStart: start,
-        currentPeriodEnd: addInterval(start, plan.interval),
-        renewalCount: subscription.renewalCount + 1,
-        cancelAtPeriodEnd: false,
-      })
-      .where(eq(subscriptions.id, subscription.id))
-      .run();
+/** Client-initiated renewal ("Renew now"): paid on-session through checkout. */
+export async function renewSubscription(input: { subscriptionId: string; userId?: string; now?: Date }): Promise<PaymentOutcome> {
+  const now = input.now ?? new Date();
+  const { order, payer, description } = createRenewalOrder(input.subscriptionId, now, input.userId);
+  return beginPayment(order, payer, description, now);
+}
 
-    if (subscription.partnerId) {
-      recordCommissions(tx, {
-        orderId: order.id,
-        partnerId: subscription.partnerId,
-        isRenewal: true,
-        now,
-        lines: [
-          {
-            productType: "app",
-            netAmount: plan.price,
-            hardwareMargin: null,
-            description: `${product.name} renewal · ${user.companyName ?? user.name}`,
-            subscriptionId: subscription.id,
-          },
-        ],
-      });
-    }
-  });
-  await sendReceipt(user, order);
-  return order;
+/** An unpaid renewal link for a subscription, if one is outstanding. */
+export function pendingRenewalOrder(subscriptionId: string): Order | null {
+  return (
+    db
+      .select()
+      .from(orders)
+      .where(and(eq(orders.subscriptionId, subscriptionId), eq(orders.kind, "renewal"), eq(orders.status, "pending")))
+      .orderBy(desc(orders.createdAt))
+      .get() ?? null
+  );
 }
 
 export function setCancelAtPeriodEnd(userId: string, subscriptionId: string, cancel: boolean): void {
@@ -451,65 +323,13 @@ export function setCancelAtPeriodEnd(userId: string, subscriptionId: string, can
   if (result.changes === 0) throw new UserFacingError("Subscription not found or not active.");
 }
 
-export interface RenewalRunResult {
-  renewed: number;
-  cancelled: number;
-  trialsEnded: number;
-  failed: number;
-}
-
-/**
- * The billing cycle job: ends lapsed trials, honours cancellations and
- * auto-renews everything else that has reached its period end. Safe to run
- * repeatedly; intended for a daily scheduler.
- */
-export async function processDueRenewals(now = new Date()): Promise<RenewalRunResult> {
-  const result: RenewalRunResult = { renewed: 0, cancelled: 0, trialsEnded: 0, failed: 0 };
-
-  result.trialsEnded = db
-    .update(subscriptions)
-    .set({ status: "expired" })
-    .where(and(eq(subscriptions.status, "trialing"), lte(subscriptions.currentPeriodEnd, now)))
-    .run().changes;
-
-  result.cancelled = db
-    .update(subscriptions)
-    .set({ status: "cancelled" })
-    .where(
-      and(
-        eq(subscriptions.status, "active"),
-        eq(subscriptions.cancelAtPeriodEnd, true),
-        lte(subscriptions.currentPeriodEnd, now),
-      ),
-    )
-    .run().changes;
-
-  const due = db
-    .select({ id: subscriptions.id })
-    .from(subscriptions)
-    .where(and(eq(subscriptions.status, "active"), lte(subscriptions.currentPeriodEnd, now)))
-    .all();
-
-  for (const { id } of due) {
-    try {
-      await renewSubscription({ subscriptionId: id, now });
-      result.renewed += 1;
-    } catch (error) {
-      console.error(`[renewals] subscription ${id} failed`, error);
-      db.update(subscriptions).set({ status: "expired" }).where(eq(subscriptions.id, id)).run();
-      result.failed += 1;
-    }
-  }
-  return result;
-}
-
 /* ------------------------------------------------------ partner bulk orders */
 
 export async function placePartnerBulkOrder(input: {
-  partner: Buyer;
+  partner: Payer;
   lines: { productId: string; quantity: number }[];
   now?: Date;
-}): Promise<Order> {
+}): Promise<PaymentOutcome> {
   const now = input.now ?? new Date();
   const profile = getPartnerProfile(input.partner.id);
   if (profile?.status !== "approved") throw new UserFacingError("Bulk ordering opens once your partner account is approved.");
@@ -545,31 +365,7 @@ export async function placePartnerBulkOrder(input: {
       now,
     }),
   );
-
-  const paymentReference = await collectPayment(order, input.partner, `Partner bulk order ${order.number}`);
-  db.transaction((tx) => {
-    markPaid(tx, order.id, paymentReference, now);
-    const items = tx
-      .select({ item: orderItems, type: products.type })
-      .from(orderItems)
-      .innerJoin(products, eq(products.id, orderItems.productId))
-      .where(eq(orderItems.orderId, order.id))
-      .all();
-    for (const { item } of items.filter((i) => i.type === "app")) {
-      tx.insert(licenceKeys)
-        .values(
-          Array.from({ length: item.quantity }, () => ({
-            key: licenceKey(),
-            orderItemId: item.id,
-            partnerId: input.partner.id,
-            productId: item.productId,
-          })),
-        )
-        .run();
-    }
-  });
-  await sendReceipt(input.partner, order);
-  return order;
+  return beginPayment(order, input.partner, `Partner bulk order ${order.number}`, now);
 }
 
 /** A client activates a one-year subscription using a key bought by their partner. */
@@ -645,8 +441,15 @@ export function listLicenceKeys(partnerId: string) {
 
 export type OrderWithItems = Order & { items: OrderItem[] };
 
+/** Orders shown to the customer: abandoned checkouts (pending without a payment link) are hidden. */
 export function listOrdersForUser(userId: string): Order[] {
-  return db.select().from(orders).where(eq(orders.userId, userId)).orderBy(desc(orders.createdAt)).all();
+  return db
+    .select()
+    .from(orders)
+    .where(eq(orders.userId, userId))
+    .orderBy(desc(orders.createdAt))
+    .all()
+    .filter((o) => o.status !== "pending" || o.paymentUrl);
 }
 
 /** Returns the order only if it belongs to the user (or for admins, any order). */
@@ -677,12 +480,4 @@ export function listAllOrders(limit = 200) {
     .orderBy(desc(orders.createdAt))
     .limit(limit)
     .all();
-}
-
-async function sendReceipt(buyer: Buyer, order: Order): Promise<void> {
-  await getMailer().send({
-    to: buyer.email,
-    subject: `Corpus365 receipt ${order.number}`,
-    text: `Hi ${buyer.name},\n\nThanks for your payment of ${formatMoney(order.total, 2)} (incl. GST). Your invoice and licence details are at ${config.appUrl}/invoices/${order.id}.`,
-  });
 }

@@ -8,7 +8,7 @@ import { db } from "@/server/db/client";
 import { partnerProfiles, users } from "@/server/db/schema";
 import { findApprovedPartnerByCode } from "@/server/services/partner.service";
 import { getUser } from "@/server/services/user.service";
-import { paymentGateway } from "@/server/payments";
+import { paymentStatus } from "@/server/payments";
 import { formatMoney } from "@/lib/format";
 import { Card } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
@@ -49,11 +49,7 @@ export default async function CheckoutPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_360px] lg:items-start">
         <Card className="p-6">
           <h2 className="mb-5 text-lg font-semibold">Billing details</h2>
-          {paymentGateway().name === "test" && (
-            <Alert tone="warning" title="Test payment mode" className="mb-5">
-              Payments are simulated and always succeed. Connect a payment provider before going live.
-            </Alert>
-          )}
+          <PaymentModeNotice />
           <CheckoutForm
             defaults={{ billingName: user.name, billingCompany: user.companyName }}
             totalLabel={formatMoney(cart.totals.total, 2)}
@@ -76,4 +72,30 @@ export default async function CheckoutPage() {
       </div>
     </div>
   );
+}
+
+function PaymentModeNotice() {
+  const status = paymentStatus();
+  if (!status.ready) {
+    return (
+      <Alert tone="danger" title="Online payments are unavailable" className="mb-5">
+        We can’t take payments right now. Please try again later or contact your partner.
+      </Alert>
+    );
+  }
+  if (status.provider === "test") {
+    return (
+      <Alert tone="warning" title="Test payment mode" className="mb-5">
+        Payments are simulated and always succeed. Configure Razorpay before going live.
+      </Alert>
+    );
+  }
+  if (status.keyMode === "test") {
+    return (
+      <Alert tone="info" title="Razorpay test mode" className="mb-5">
+        No real money moves. Use Razorpay’s test UPI ID <code>success@razorpay</code> or a test card.
+      </Alert>
+    );
+  }
+  return null;
 }

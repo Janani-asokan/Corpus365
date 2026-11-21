@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { PendingPayment } from "./payment-types";
 
 /** Result shape every form server action returns to `useActionState`. */
 export type ActionState = {
@@ -7,6 +8,8 @@ export type ActionState = {
   fieldErrors?: Partial<Record<string, string[]>>;
   /** What the user submitted, echoed back on failure (never passwords). */
   values?: Record<string, string>;
+  /** Set when the browser must complete payment in the provider's checkout. */
+  payment?: PendingPayment;
 };
 
 export const initialActionState: ActionState = {};

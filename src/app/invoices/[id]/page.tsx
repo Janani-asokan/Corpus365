@@ -13,11 +13,12 @@ import { OrderSummary } from "@/components/catalog/order-summary";
 
 export const metadata: Metadata = { title: "Invoice" };
 
-export default async function InvoicePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ placed?: string }> }) {
+export default async function InvoicePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ placed?: string; paid?: string }> }) {
   const user = await requireUser();
   const order = getOrder((await params).id, user);
   if (!order) notFound();
-  const placed = (await searchParams).placed === "1";
+  const query = await searchParams;
+  const placed = query.placed === "1";
 
   const keys = order.kind === "partner_bulk" ? listLicenceKeys(order.userId).filter((k) => order.items.some((i) => i.id === k.key.orderItemId)) : [];
 
@@ -27,6 +28,12 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
         <LinkButton href={user.role === "client" ? "/account/orders" : HOME_FOR_ROLE[user.role]} variant="ghost">← Back</LinkButton>
         <PrintButton />
       </div>
+      {query.paid === "1" && <Alert tone="success" title="Payment received — thank you" className="no-print mb-6">Your subscription is renewed.</Alert>}
+      {order.status === "pending" && order.paymentUrl && (
+        <Alert tone="warning" title="Awaiting payment" className="no-print mb-6">
+          <a href={order.paymentUrl} target="_blank" rel="noopener noreferrer" className="font-medium underline">Pay securely with Razorpay</a>
+        </Alert>
+      )}
       {placed && <Alert tone="success" title="Bulk order placed" className="no-print mb-6">Your order is paid. Hardware ships to your registered address; licence keys are below.</Alert>}
 
       <Card className="p-6 sm:p-10">
@@ -36,7 +43,7 @@ export default async function InvoicePage({ params, searchParams }: { params: Pr
             <p className="mt-1 text-sm text-ink-muted">Corpus365 Marketplace<br />Kochi, Kerala, India</p>
           </div>
           <div className="text-right">
-            <h1 className="text-2xl font-semibold">Tax invoice</h1>
+            <h1 className="text-2xl font-semibold">{order.status === "paid" ? "Tax invoice" : "Proforma invoice"}</h1>
             <p className="mt-1 text-sm text-ink-muted">{order.number}</p>
             <div className="mt-2"><StatusBadge status={order.status} /></div>
           </div>

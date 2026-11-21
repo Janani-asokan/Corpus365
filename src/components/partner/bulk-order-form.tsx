@@ -10,6 +10,7 @@ import { SubmitButton } from "@/components/ui/submit-button";
 import { FormMessage } from "@/components/ui/form-message";
 import { ProductIcon } from "@/components/ui/product-icon";
 import { OrderSummary } from "@/components/catalog/order-summary";
+import { PaymentStep } from "@/components/payments/payment-step";
 
 export interface BulkItem {
   id: string;
@@ -81,6 +82,7 @@ export function BulkOrderForm({ items, disabled }: { items: BulkItem[]; disabled
         <div className="w-full max-w-xs"><OrderSummary totals={totals} /></div>
         <div className="space-y-2 sm:text-right">
           <FormMessage state={state} />
+          <PaymentStep payment={state.payment} />
           <SubmitButton size="lg" disabled={disabled || totals.subtotal === 0 || hasErrors} pendingLabel="Placing order…">
             Place order · {formatMoney(totals.total)}
           </SubmitButton>

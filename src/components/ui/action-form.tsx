@@ -4,6 +4,7 @@ import { useActionState, type ReactNode } from "react";
 import { initialActionState, type ActionState } from "@/lib/validation";
 import { FormMessage } from "./form-message";
 import { SubmitButton } from "./submit-button";
+import { PaymentStep } from "@/components/payments/payment-step";
 import type { ComponentProps } from "react";
 
 type Action = (state: ActionState, form: FormData) => Promise<ActionState>;
@@ -50,6 +51,11 @@ export function ActionForm({
       {state.message && (
         <div className="mt-2">
           <FormMessage state={state} />
+        </div>
+      )}
+      {state.payment && (
+        <div className="mt-2">
+          <PaymentStep payment={state.payment} />
         </div>
       )}
     </form>

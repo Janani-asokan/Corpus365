@@ -5,7 +5,7 @@ import { z } from "zod";
 import { requireUser } from "@/server/auth/guards";
 import { reviewPartner } from "@/server/services/partner.service";
 import { setProductStatus } from "@/server/services/catalog.service";
-import { processDueRenewals } from "@/server/services/order.service";
+import { processDueRenewals } from "@/server/services/billing.service";
 import { generatePayouts, markPayoutPaid } from "@/server/services/payout.service";
 import { setQuoteStatus } from "@/server/services/quote.service";
 import { audit } from "@/server/services/audit.service";
@@ -49,13 +49,16 @@ export async function setProductStatusAction(form: FormData): Promise<void> {
 
 export async function runRenewalsAction(_prev: ActionState): Promise<ActionState> {
   const admin = await requireAdmin();
-  const result = await processDueRenewals();
-  audit(db, { actorId: admin.id, action: "renewals.run", detail: JSON.stringify(result) });
+  let summary = "";
+  const r = await attempt(async () => {
+    const result = await processDueRenewals();
+    audit(db, { actorId: admin.id, action: "renewals.run", detail: JSON.stringify(result) });
+    summary =
+      `Renewed ${result.renewed}, payment links sent ${result.linksSent}, lapsed after grace ${result.lapsed}, ` +
+      `cancelled ${result.cancelled}, trials ended ${result.trialsEnded}, failed ${result.failed}.`;
+  });
   revalidatePath("/admin", "layout");
-  return {
-    ok: true,
-    message: `Renewed ${result.renewed}, cancelled ${result.cancelled}, trials ended ${result.trialsEnded}, failed ${result.failed}.`,
-  };
+  return r.ok ? { ok: true, message: summary } : r;
 }
 
 export async function generatePayoutsAction(_prev: ActionState): Promise<ActionState> {

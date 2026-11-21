@@ -31,11 +31,46 @@ Emails (welcome, password reset, receipts, payouts) are printed to the server lo
 | ------------------- | ------------------------------------------ |
 | `npm run dev`       | Development server                         |
 | `npm run build`     | Production build (type-checks and lints)   |
-| `npm test`          | Unit tests for the business rules          |
+| `npm test`          | Unit and integration tests (business rules, payment flows) |
 | `npm run lint`      | ESLint                                     |
 | `npm run typecheck` | TypeScript                                 |
 | `npm run db:reset`  | Recreate the database with fresh demo data |
 | `npm run db:generate` | Generate a migration after editing the schema |
+
+## Payments (Razorpay)
+
+Payments run through **Razorpay**. Locally, without keys, checkout uses an instant **test** gateway.
+
+How a payment flows:
+
+1. The server creates a pending order and a Razorpay order for the exact amount.
+2. Razorpay Checkout opens in the browser (UPI, cards, net banking, wallets).
+3. The browser returns a signed proof, and the server verifies the HMAC signature before fulfilling anything.
+4. The `order.paid` / `payment.captured` webhook also fulfils the order, in case the customer closes the tab after paying. Fulfilment is idempotent, so retries and overlapping events are harmless.
+
+Payments the customer was never asked for are refused, and so is any webhook whose amount doesn't match the order.
+
+**Renewals.** Razorpay can't silently re-charge a customer without an e-mandate. The daily billing job therefore sends a Razorpay **Payment Link** by email and SMS. The link also shows on the client's Subscriptions page. Access continues for a 7-day grace period, then lapses if unpaid. Paying renews from the old period end, so no days are lost or gained.
+
+### Going live with Razorpay
+
+1. In the Razorpay Dashboard, create **test** API keys first (`rzp_test_…`).
+2. Set the environment variables (see `.env.example`):
+   ```bash
+   PAYMENT_PROVIDER=razorpay
+   RAZORPAY_KEY_ID=rzp_test_…
+   RAZORPAY_KEY_SECRET=…
+   RAZORPAY_WEBHOOK_SECRET=…      # any strong secret you choose
+   APP_URL=https://your-domain
+   CRON_SECRET=…                  # any strong secret
+   ```
+3. Under **Webhooks**, add `https://your-domain/api/webhooks/razorpay` with the same secret, and subscribe to `order.paid`, `payment.captured` and `payment_link.paid`.
+4. Schedule the billing job daily:
+   `curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://your-domain/api/cron/billing`
+5. Make a test purchase using the UPI ID `success@razorpay` or a Razorpay test card. Admin → Overview shows "Razorpay connected · test mode".
+6. When Razorpay activates your account, swap in the `rzp_live_…` keys.
+
+In production, the site refuses test payments unless `ALLOW_TEST_PAYMENTS=true`, so a missing key can never give products away. Instead, admins see "Payments are switched off" and checkout shows a clear message.
 
 ## Features
 
@@ -57,7 +92,7 @@ src/
     auth/        Sessions, password hashing, rate limiting, role guards
     services/    Use cases (orders, subscriptions, commissions, payouts, partners…) in transactions
     actions/     Server Actions: validate input → authorise → call a service
-    payments/    PaymentGateway port + test adapter
+    payments/    PaymentGateway port, Razorpay adapter (orders, payment links, signatures), test adapter
     mail/        Mailer port + console adapter
   components/    UI kit (ui/), layout, and feature components
   app/           Routes (Next.js App Router)
@@ -95,9 +130,9 @@ Dependencies point inwards: routes → actions → services → domain. The doma
 
 ## Before going live
 
-1. **Payments**: implement `PaymentGateway` for your provider (e.g. Razorpay) and register it with `setPaymentGateway` at start-up. Checkout shows a "Test payment mode" banner until you do.
+1. **Payments**: configure Razorpay (see *Going live with Razorpay* above).
 2. **Email**: implement `Mailer` (e.g. SES or Postmark) and register it with `setMailer`.
 3. **Database**: SQLite suits a single server. For multiple instances, switch the Drizzle driver to Postgres (the schema maps one to one) and move the rate limiter to Redis.
-4. **Billing job**: schedule `processDueRenewals()` daily. Today it is run from Admin → "Process due renewals".
+4. **Billing job**: call `POST /api/cron/billing` daily. Admins can also run it from Admin → "Process due renewals".
 5. **Content**: product prices, the launch bonus amount and support contacts are placeholders (see `scripts/seed.ts`, `domain/program.ts`, `lib/config.ts`). The partner agreement page is a plain-language summary and needs legal review.
 6. Set `APP_URL` to your public URL, so referral links and emails point to the right place.

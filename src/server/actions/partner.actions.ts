@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/server/auth/guards";
 import * as leads from "@/server/services/lead.service";
-import { placePartnerBulkOrder } from "@/server/services/order.service";
+import { placePartnerBulkOrder, type PaymentOutcome } from "@/server/services/order.service";
 import { LEAD_STATUSES } from "@/domain/constants";
 import { fieldErrorsOf, formToObject, leadSchema, type ActionState } from "@/lib/validation";
 import { attempt } from "./helpers";
@@ -43,11 +43,12 @@ export async function placeBulkOrderAction(_prev: ActionState, form: FormData): 
     .map(([key, value]) => ({ productId: key.slice(4), quantity: Number(value) || 0 }))
     .filter((line) => line.quantity > 0);
 
-  let orderId = "";
+  let outcome: PaymentOutcome | undefined;
   const result = await attempt(async () => {
-    orderId = (await placePartnerBulkOrder({ partner, lines })).id;
+    outcome = await placePartnerBulkOrder({ partner, lines });
   });
-  if (!result.ok) return result;
+  if (!result.ok || !outcome) return result;
+  if (outcome.status === "pending") return { ok: true, payment: outcome.payment };
   revalidatePath("/partner", "layout");
-  redirect(`/invoices/${orderId}?placed=1`);
+  redirect(`/invoices/${outcome.order.id}?placed=1`);
 }

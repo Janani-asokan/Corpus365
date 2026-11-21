@@ -5,6 +5,8 @@ import { requireUser } from "@/server/auth/guards";
 import { getAdminMetrics, listRecentAudit } from "@/server/services/admin.service";
 import { runRenewalsAction, generatePayoutsAction } from "@/server/actions/admin.actions";
 import { formatCount, formatDate, formatMoney } from "@/lib/format";
+import { paymentStatus } from "@/server/payments";
+import { Alert } from "@/components/ui/alert";
 import { PageHeader } from "@/components/ui/page-header";
 import { Stat } from "@/components/ui/stat";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -20,10 +22,20 @@ export default async function AdminOverviewPage() {
   await requireUser(["admin"]);
   const m = getAdminMetrics();
   const audit = listRecentAudit(12);
+  const payments = paymentStatus();
 
   return (
     <>
       <PageHeader title="Marketplace overview" description="Live figures against the month-12 targets." />
+      {!payments.ready ? (
+        <Alert tone="danger" title="Payments are switched off" className="mb-6">{payments.problem} Clients cannot check out until this is fixed.</Alert>
+      ) : payments.provider === "test" ? (
+        <Alert tone="warning" title="Test payments" className="mb-6">Checkout is simulated. Set the Razorpay keys to take real payments.</Alert>
+      ) : (
+        <Alert tone={payments.keyMode === "live" ? "success" : "info"} title={`Razorpay connected · ${payments.keyMode} mode`} className="mb-6">
+          {payments.keyMode === "live" ? "Real payments are being collected." : "Using test keys: no real money moves."}
+        </Alert>
+      )}
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Paying clients" value={formatCount(m.payingClients)} icon={<Users className="size-4" />} hint={`Target ${formatCount(TARGETS.payingClients)}+ · ${m.trials} on trial`} />
         <Stat label="Approved partners" value={m.partnersApproved} icon={<Handshake className="size-4" />} hint={<>Target {TARGETS.partners} · <Link href="/admin/partners?status=pending" className="font-medium text-brand hover:underline">{m.partnersPending} awaiting review</Link></>} />
@@ -34,7 +46,7 @@ export default async function AdminOverviewPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card className="p-5">
           <h2 className="font-semibold">Billing cycle</h2>
-          <p className="mt-1 mb-4 text-sm text-ink-muted">Ends lapsed trials, honours cancellations and auto-renews subscriptions that are due. Runs daily in production; run it now to catch up.</p>
+          <p className="mt-1 mb-4 text-sm text-ink-muted">Ends lapsed trials, honours cancellations and bills due subscriptions (a Razorpay payment link, with a grace period before access lapses). Schedule it daily; run it now to catch up.</p>
           <ActionForm action={runRenewalsAction} label="Process due renewals" variant="primary" pendingLabel="Processing…" />
         </Card>
         <Card className="p-5">

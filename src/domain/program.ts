@@ -19,6 +19,8 @@ export const PROGRAM = {
   defaultHardwareMargin: 1000 as BasisPoints,
   /** How long a referral link keeps a visitor attributed to a partner. */
   referralCookieDays: 30,
+  /** Days a client has to pay a renewal link before the subscription lapses. */
+  renewalGraceDays: 7,
   /** Default free-trial length for apps. */
   defaultTrialDays: 14,
 } as const;

@@ -62,22 +62,23 @@ export async function checkoutAction(_prev: ActionState, form: FormData): Promis
   const parsed = checkoutSchema.safeParse(formToObject(form));
   if (!parsed.success) return fieldErrorsOf(parsed.error);
 
-  let orderId = "";
+  let outcome: orders.PaymentOutcome | undefined;
   const result = await attempt(async () => {
-    const order = await orders.checkout({
+    outcome = await orders.checkout({
       buyer: user,
       lines: await readCartLines(),
       billing: parsed.data,
       partnerCode: parsed.data.partnerCode,
       referralCookie: await readReferralCode(),
     });
-    orderId = order.id;
   });
-  if (!result.ok) return result;
+  if (!result.ok || !outcome) return result;
+  // Razorpay: the browser opens checkout; the cart is cleared once payment is confirmed.
+  if (outcome.status === "pending") return { ok: true, payment: outcome.payment };
 
   await writeCartLines([]);
   revalidatePath("/", "layout");
-  redirect(`/checkout/success/${orderId}`);
+  redirect(`/checkout/success/${outcome.order.id}`);
 }
 
 export async function startTrialAction(_prev: ActionState, form: FormData): Promise<ActionState> {
@@ -115,12 +116,14 @@ export async function renewSubscriptionAction(_prev: ActionState, form: FormData
   const parsed = subscriptionIdSchema.safeParse(formToObject(form));
   if (!parsed.success) return { ok: false, message: "Subscription not found." };
 
-  const result = await attempt(
-    () => orders.renewSubscription({ subscriptionId: parsed.data.subscriptionId, userId: user.id }),
-    "Renewed. Your receipt is in Orders & invoices.",
-  );
+  let outcome: orders.PaymentOutcome | undefined;
+  const result = await attempt(async () => {
+    outcome = await orders.renewSubscription({ subscriptionId: parsed.data.subscriptionId, userId: user.id });
+  });
+  if (!result.ok || !outcome) return result;
+  if (outcome.status === "pending") return { ok: true, payment: outcome.payment };
   revalidatePath("/account", "layout");
-  return result;
+  return { ok: true, message: "Renewed. Your receipt is in Orders & invoices." };
 }
 
 export async function setAutoRenewAction(_prev: ActionState, form: FormData): Promise<ActionState> {

@@ -6,6 +6,7 @@ import { checkoutAction } from "@/server/actions/shop.actions";
 import { Field, Input } from "@/components/ui/field";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { FormMessage } from "@/components/ui/form-message";
+import { PaymentStep } from "@/components/payments/payment-step";
 
 export function CheckoutForm({
   defaults,
@@ -51,9 +52,11 @@ export function CheckoutForm({
       )}
 
       <FormMessage state={state} />
-      <SubmitButton size="lg" className="w-full" pendingLabel="Processing payment…">
+      <PaymentStep payment={state.payment} />
+      <SubmitButton size="lg" className="w-full" pendingLabel="Starting secure payment…">
         <Lock className="size-4" aria-hidden /> Pay {totalLabel}
       </SubmitButton>
+      <p className="text-center text-xs text-ink-muted">UPI, cards, net banking and wallets · payments secured by Razorpay</p>
     </Form>
   );
 }

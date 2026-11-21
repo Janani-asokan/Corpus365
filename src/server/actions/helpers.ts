@@ -2,6 +2,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { unstable_rethrow } from "next/navigation";
 import { messageOf } from "@/lib/errors";
+import { PaymentConfigError } from "@/server/payments";
 import type { ActionState } from "@/lib/validation";
 
 /**
@@ -14,6 +15,10 @@ export async function attempt(fn: () => unknown, success?: string): Promise<Acti
     return { ok: true, message: success };
   } catch (error) {
     unstable_rethrow(error);
+    if (error instanceof PaymentConfigError) {
+      console.error("[payments] not configured:", error.message);
+      return { ok: false, message: "Online payments are temporarily unavailable. Please try again later." };
+    }
     const message = messageOf(error);
     if (message === messageOf(null)) console.error("[action] unexpected error", error);
     return { ok: false, message };

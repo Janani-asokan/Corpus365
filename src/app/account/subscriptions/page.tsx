@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { KeyRound, RefreshCw } from "lucide-react";
 import { requireUser } from "@/server/auth/guards";
-import { listSubscriptionsForUser } from "@/server/services/order.service";
+import { listSubscriptionsForUser, pendingRenewalOrder } from "@/server/services/order.service";
 import { renewSubscriptionAction, setAutoRenewAction } from "@/server/actions/shop.actions";
 import { daysUntil, formatDate, formatMoney } from "@/lib/format";
 import { PageHeader } from "@/components/ui/page-header";
@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Alert } from "@/components/ui/alert";
 import { StatusBadge } from "@/components/ui/badge";
 import { ProductIcon } from "@/components/ui/product-icon";
-import { LinkButton } from "@/components/ui/button";
+import { LinkButton, buttonStyles } from "@/components/ui/button";
 import { ActionForm } from "@/components/ui/action-form";
 import { CopyButton } from "@/components/ui/copy-button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -17,14 +17,16 @@ import { RedeemLicenceForm } from "@/components/forms/redeem-licence-form";
 
 export const metadata: Metadata = { title: "Subscriptions" };
 
-export default async function SubscriptionsPage({ searchParams }: { searchParams: Promise<{ trial?: string }> }) {
+export default async function SubscriptionsPage({ searchParams }: { searchParams: Promise<{ trial?: string; renewed?: string; payment?: string }> }) {
   const user = await requireUser(["client"]);
-  const { trial } = await searchParams;
+  const { trial, renewed, payment } = await searchParams;
   const subs = listSubscriptionsForUser(user.id);
 
   return (
     <>
       <PageHeader title="Subscriptions" description="Your apps, licence keys and renewal settings." />
+      {renewed && <Alert tone="success" title="Payment received" className="mb-6">Your subscription is renewed. The invoice is in Orders &amp; invoices.</Alert>}
+      {payment === "failed" && <Alert tone="danger" title="We couldn’t confirm that payment" className="mb-6">If money left your account, it will be matched automatically within a few minutes, or refunded by Razorpay. Otherwise, please try again.</Alert>}
       {trial && <Alert tone="success" title="Your free trial has started" className="mb-6">Sign in to the app with your licence key below. Sample data is loaded so you can explore straight away.</Alert>}
 
       {subs.length === 0 ? (
@@ -37,6 +39,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
         <ul className="space-y-4">
           {subs.map(({ subscription, product, plan }) => {
             const days = daysUntil(subscription.currentPeriodEnd);
+            const due = subscription.status === "active" ? pendingRenewalOrder(subscription.id) : null;
             return (
               <li key={subscription.id}>
                 <Card className="p-5">
@@ -67,11 +70,17 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
                     </div>
                   </div>
 
+                  {due?.paymentUrl && (
+                    <Alert tone="warning" title={`Renewal payment due · ${formatMoney(due.total, 2)}`} className="mt-4">
+                      Pay to keep using {product.name} without interruption.{" "}
+                      <a href={due.paymentUrl} target="_blank" rel="noopener noreferrer" className={buttonStyles({ size: "sm", className: "mt-2 sm:mt-0 sm:ml-2" })}>Pay now</a>
+                    </Alert>
+                  )}
                   <div className="mt-5 flex flex-wrap items-start gap-3 border-t border-line pt-4">
                     {subscription.status === "trialing" && (
                       <LinkButton href={`/marketplace/${product.slug}`} size="sm">Choose a plan to keep using it</LinkButton>
                     )}
-                    {plan && (subscription.status === "active" || subscription.status === "expired" || subscription.status === "cancelled") && (
+                    {plan && !due?.paymentUrl && (subscription.status === "active" || subscription.status === "expired" || subscription.status === "cancelled") && (
                       <ActionForm
                         action={renewSubscriptionAction}
                         label={subscription.status === "active" ? `Renew now · ${formatMoney(plan.price)}` : `Reactivate · ${formatMoney(plan.price)}`}

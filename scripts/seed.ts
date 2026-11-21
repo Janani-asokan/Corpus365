@@ -10,12 +10,15 @@ import { db } from "@/server/db/client";
 import * as t from "@/server/db/schema";
 import { hashPassword } from "@/server/auth/password";
 import { setMailer } from "@/server/mail/mailer";
+import { setPaymentGateway } from "@/server/payments";
+import { TestPaymentGateway } from "@/server/payments/test-gateway";
 import { rupees } from "@/domain/money";
 import { addDays } from "@/domain/pricing";
 import { checkout, placePartnerBulkOrder, renewSubscription, startTrial } from "@/server/services/order.service";
 import { generatePayouts, markPayoutPaid } from "@/server/services/payout.service";
 
 setMailer({ send: async () => {} }); // keep seeding quiet
+setPaymentGateway(new TestPaymentGateway()); // demo history never touches a real provider
 
 const NOW = new Date();
 const daysAgo = (days: number) => addDays(NOW, -days);
