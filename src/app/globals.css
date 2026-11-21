@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* Design tokens, taken from the Corpus365 brief. */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Space Grotesk Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --color-ink: #0f1a2c;
+  --color-ink-soft: #1b2a44;
+  --color-ink-muted: #556070;
+  --color-paper: #f3f0e9;
+  --color-surface: #fbfaf6;
+  --color-line: #ddd7ca;
+  --color-line-strong: #c9c2b2;
+
+  --color-brand: #0b6b5c;
+  --color-brand-hover: #08594c;
+  --color-brand-tint: #e2eee9;
+  --color-accent: #e9a23b;
+  --color-accent-tint: #fbf0dc;
+
+  --color-danger: #b42318;
+  --color-danger-tint: #fdecea;
+  --color-warning: #8a5a00;
+  --color-warning-tint: #fdf3dd;
+  --color-info: #1d4f91;
+  --color-info-tint: #e6eef9;
+
+  --radius-card: 0.75rem;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-paper font-sans text-ink antialiased;
+  }
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight text-balance;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+  /* Grid items default to min-width:auto, so a wide table or long URL would
+     stretch the whole column past the screen on phones. Let them shrink. */
+  .grid > * {
+    min-width: 0;
+  }
+  ::selection {
+    background: var(--color-accent-tint);
+  }
+}
+
+@layer components {
+  .eyebrow {
+    @apply font-display text-xs font-semibold tracking-[0.18em] uppercase text-brand;
+  }
+  .container-page {
+    @apply mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; }
+}

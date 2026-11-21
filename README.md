@@ -1,0 +1,103 @@
+# Corpus365 Marketplace
+
+Business software for every business, sold and supported by people near you.
+
+A two-sided marketplace: **businesses** browse apps and hardware, start free trials, subscribe and renew; **Channel Partners** share a referral link or code, track clients and leads, and earn commission on every sale and every renewal; **admins** approve partners, run billing and pay partners monthly.
+
+## Quick start
+
+Requires Node.js 20+.
+
+```bash
+npm install
+cp .env.example .env        # optional; defaults work locally
+npm run setup               # create the database and load demo data
+npm run dev                 # http://localhost:3000
+```
+
+Demo accounts (seed data):
+
+| Role    | Email                    | Password        |
+| ------- | ------------------------ | --------------- |
+| Admin   | `admin@corpus365.test`   | `Admin@12345`   |
+| Partner | `partner@corpus365.test` | `Partner@12345` |
+| Client  | `client@corpus365.test`  | `Client@12345`  |
+
+Try a partner link: `http://localhost:3000/r/ANU365?to=school-erp-management`.
+
+Emails (welcome, password reset, receipts, payouts) are printed to the server log in development.
+
+| Script              | What it does                               |
+| ------------------- | ------------------------------------------ |
+| `npm run dev`       | Development server                         |
+| `npm run build`     | Production build (type-checks and lints)   |
+| `npm test`          | Unit tests for the business rules          |
+| `npm run lint`      | ESLint                                     |
+| `npm run typecheck` | TypeScript                                 |
+| `npm run db:reset`  | Recreate the database with fresh demo data |
+| `npm run db:generate` | Generate a migration after editing the schema |
+
+## Features
+
+**Storefront** — catalogue of apps and hardware with search and filters · plan picker (monthly / yearly with savings) · 14-day free trials · cart and checkout with 18% GST and optional GSTIN · printable tax invoices · site quotes for per-site hardware.
+
+**Business account** — subscriptions with licence keys · renew now, auto-renew on/off, reactivate · redeem a partner's licence key · orders and invoices · contact card for their local partner.
+
+**Partner portal** — referral link builder (any product, WhatsApp share) · tier and progress to the next tier · earnings split into pending clearance / available / in payout / paid · commission history that keeps the rate used · clients and lead pipeline · bulk ordering at partner volume prices (licence packs issue keys) · training and resources.
+
+**Admin** — live metrics against the month-12 targets (clients, partners, channel cost under 30%) · partner application review (approve / reject / suspend) · billing cycle (end trials, honour cancellations, auto-renew) · monthly payout run and mark-paid with reference · catalogue status control · quote requests · audit log.
+
+## Architecture
+
+```
+src/
+  domain/        Pure business rules: money, tiers, commission, pricing. No I/O; unit-tested.
+  server/
+    db/          Drizzle schema + SQLite connection
+    auth/        Sessions, password hashing, rate limiting, role guards
+    services/    Use cases (orders, subscriptions, commissions, payouts, partners…) in transactions
+    actions/     Server Actions: validate input → authorise → call a service
+    payments/    PaymentGateway port + test adapter
+    mail/        Mailer port + console adapter
+  components/    UI kit (ui/), layout, and feature components
+  app/           Routes (Next.js App Router)
+```
+
+Dependencies point inwards: routes → actions → services → domain. The domain knows nothing about the database or the web, so the commercial rules (all marked *proposed* in the brief) live in two files, `domain/tiers.ts` and `domain/program.ts`, and can be tuned without touching anything else.
+
+### Business rules
+
+- **Tiers** by the partner's *own* active clients: Channel 0–9 (20% / 10%), Silver 10–24 (25% / 12%), Gold 25–49 + 80% renewing (30% / 15%), Platinum 50+ + 85% renewing (35% / 20%). Until 10 subscriptions have come up for renewal, the renewal-rate requirement counts as met, so first-year partners aren't blocked by missing history.
+- **Single level**: commission only on the partner's own clients' sales and renewals; never on recruiting.
+- **Hardware** earns a one-time per-product margin (8–12%).
+- **Launch bonus**: a fixed amount on each of the first 3 sales within 60 days of approval.
+- **Attribution** is first-touch and then locked to the client's account. Partners can never be credited for their own purchases.
+- **Commissions** store the tier and rate at the time of sale, are held for a 14-day refund window, then bundled into a monthly payout. Their status moves from *pending* to *in payout* to *paid*, so nothing can be paid twice.
+- **Money** is integer paise and rates are basis points, so there are no floating-point errors.
+
+### Security
+
+- Opaque database sessions: the cookie is httpOnly, SameSite=Lax and Secure in production, and only a SHA-256 of the token is stored. Sessions are revoked on logout and on password reset.
+- bcrypt password hashing, with timing kept the same whether or not an account exists.
+- Login rate limiting.
+- Password reset and the forgot-password form don't reveal whether an email is registered.
+- Every protected page and action re-checks the session and role on the server. Middleware is only a fast redirect.
+- All input is validated with Zod. Prices always come from the database; the cart cookie holds only ids and quantities.
+- Same-site checks stop open redirects after login. Server Actions are protected against CSRF.
+- Security headers are set (X-Frame-Options DENY, nosniff, Referrer-Policy, Permissions-Policy). Sensitive admin actions are written to an audit log.
+
+### Usability and compatibility
+
+- Responsive from 320px up. Tables scroll horizontally inside their cards, never the whole page.
+- Labelled fields with errors linked for screen readers, visible focus, a skip link, and reduced-motion support.
+- Forms keep what you typed when validation fails (passwords excepted).
+- Most pages and forms are server-rendered and work as plain HTML forms.
+
+## Before going live
+
+1. **Payments**: implement `PaymentGateway` for your provider (e.g. Razorpay) and register it with `setPaymentGateway` at start-up. Checkout shows a "Test payment mode" banner until you do.
+2. **Email**: implement `Mailer` (e.g. SES or Postmark) and register it with `setMailer`.
+3. **Database**: SQLite suits a single server. For multiple instances, switch the Drizzle driver to Postgres (the schema maps one to one) and move the rate limiter to Redis.
+4. **Billing job**: schedule `processDueRenewals()` daily. Today it is run from Admin → "Process due renewals".
+5. **Content**: product prices, the launch bonus amount and support contacts are placeholders (see `scripts/seed.ts`, `domain/program.ts`, `lib/config.ts`). The partner agreement page is a plain-language summary and needs legal review.
+6. Set `APP_URL` to your public URL, so referral links and emails point to the right place.
