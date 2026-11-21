@@ -49,7 +49,7 @@ export async function clientSignupAction(_prev: ActionState, form: FormData): Pr
   const { next, ...input } = parsed.data;
 
   const referral = await readReferralCode();
-  const partner = referral ? findApprovedPartnerByCode(referral) : null;
+  const partner = referral ? await findApprovedPartnerByCode(referral) : null;
 
   let userId = "";
   const result = await attempt(async () => {

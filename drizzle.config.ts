@@ -1,8 +1,9 @@
 import { defineConfig } from "drizzle-kit";
 
 export default defineConfig({
-  dialect: "sqlite",
+  dialect: "postgresql",
   schema: "./src/server/db/schema.ts",
   out: "./drizzle",
-  dbCredentials: { url: process.env.DATABASE_PATH ?? "./data/corpus365.db" },
+  dbCredentials: { url: process.env.DATABASE_URL ?? "postgres://corpus:corpus@localhost:5432/corpus365" },
+  strict: true,
 });

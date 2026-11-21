@@ -1,5 +1,6 @@
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db } from "@/server/db/client";
+import { first, isUniqueViolation, single } from "@/server/db/query";
 import { partnerProfiles, passwordResetTokens, users, type User } from "@/server/db/schema";
 import { hashPassword, verifyAgainstDummy, verifyPassword } from "@/server/auth/password";
 import { revokeAllSessions } from "@/server/auth/session";
@@ -10,26 +11,31 @@ import { config } from "@/lib/config";
 import { audit } from "./audit.service";
 
 const RESET_TOKEN_MINUTES = 30;
+const EMAIL_TAKEN = "An account with this email already exists. Try signing in instead.";
 
-export function findUserByEmail(email: string): User | null {
-  return db.select().from(users).where(eq(users.email, email.toLowerCase())).get() ?? null;
+export async function findUserByEmail(email: string): Promise<User | null> {
+  return (await first(db.select().from(users).where(eq(users.email, email.toLowerCase())).limit(1))) ?? null;
 }
 
-export function getUser(id: string): User | null {
-  return db.select().from(users).where(eq(users.id, id)).get() ?? null;
+export async function getUser(id: string): Promise<User | null> {
+  return (await first(db.select().from(users).where(eq(users.id, id)).limit(1))) ?? null;
 }
 
 /** Returns the user only if the password matches; constant-ish time either way. */
 export async function authenticate(email: string, password: string): Promise<User | null> {
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
   if (!user) return verifyAgainstDummy(password).then(() => null);
   return (await verifyPassword(password, user.passwordHash)) ? user : null;
 }
 
-function assertEmailFree(email: string): void {
-  if (findUserByEmail(email)) {
-    throw new UserFacingError("An account with this email already exists. Try signing in instead.");
-  }
+async function assertEmailFree(email: string): Promise<void> {
+  if (await findUserByEmail(email)) throw new UserFacingError(EMAIL_TAKEN);
+}
+
+/** The unique index is the real guard; this turns a race into a friendly message. */
+function rethrowDuplicateEmail(error: unknown): never {
+  if (isUniqueViolation(error, "users_email_key")) throw new UserFacingError(EMAIL_TAKEN);
+  throw error;
 }
 
 export async function registerClient(input: {
@@ -41,13 +47,9 @@ export async function registerClient(input: {
   city: string;
   referredByPartnerId: string | null;
 }): Promise<User> {
-  assertEmailFree(input.email);
+  await assertEmailFree(input.email);
   const passwordHash = await hashPassword(input.password);
-  const user = db
-    .insert(users)
-    .values({ ...input, role: "client", passwordHash })
-    .returning()
-    .get();
+  const user = await single(db.insert(users).values({ ...input, role: "client", passwordHash }).returning()).catch(rethrowDuplicateEmail);
 
   await getMailer().send({
     to: user.email,
@@ -67,29 +69,31 @@ export async function registerPartnerApplication(input: {
   profession: string;
   experience?: string | null;
 }): Promise<User> {
-  assertEmailFree(input.email);
+  await assertEmailFree(input.email);
   const passwordHash = await hashPassword(input.password);
+  const code = await uniquePartnerCode(input.name);
 
-  const user = db.transaction((tx) => {
-    const created = tx
-      .insert(users)
-      .values({ name: input.name, email: input.email, phone: input.phone, city: input.city, role: "partner", passwordHash })
-      .returning()
-      .get();
-    tx.insert(partnerProfiles)
-      .values({
+  const user = await db
+    .transaction(async (tx) => {
+      const created = await single(
+        tx
+          .insert(users)
+          .values({ name: input.name, email: input.email, phone: input.phone, city: input.city, role: "partner", passwordHash })
+          .returning(),
+      );
+      await tx.insert(partnerProfiles).values({
         userId: created.id,
-        code: uniquePartnerCode(input.name),
+        code,
         status: "pending",
         profession: input.profession,
         region: input.region,
         experience: input.experience ?? null,
         agreementAcceptedAt: new Date(),
-      })
-      .run();
-    audit(tx, { actorId: created.id, action: "partner.applied", entityId: created.id });
-    return created;
-  });
+      });
+      await audit(tx, { actorId: created.id, action: "partner.applied", entityId: created.id });
+      return created;
+    })
+    .catch(rethrowDuplicateEmail);
 
   await getMailer().send({
     to: user.email,
@@ -100,45 +104,45 @@ export async function registerPartnerApplication(input: {
 }
 
 /** Codes look like "ANU4K7Q": name-derived prefix plus random characters. */
-function uniquePartnerCode(name: string): string {
+async function uniquePartnerCode(name: string): Promise<string> {
   const prefix = (name.replace(/[^A-Za-z]/g, "").toUpperCase() + "XXX").slice(0, 3);
   for (let attempt = 0; attempt < 10; attempt++) {
     const code = prefix + randomCode(4);
-    const taken = db.select({ code: partnerProfiles.code }).from(partnerProfiles).where(eq(partnerProfiles.code, code)).get();
+    const taken = await first(db.select({ code: partnerProfiles.code }).from(partnerProfiles).where(eq(partnerProfiles.code, code)).limit(1));
     if (!taken) return code;
   }
   throw new Error("Could not allocate a unique partner code");
 }
 
-export function updateProfile(
+export async function updateProfile(
   userId: string,
   input: { name: string; phone: string | null; companyName?: string | null; city?: string | null },
-): void {
-  db.update(users)
+): Promise<void> {
+  await db
+    .update(users)
     .set({ name: input.name, phone: input.phone, companyName: input.companyName ?? null, city: input.city ?? null })
-    .where(eq(users.id, userId))
-    .run();
+    .where(eq(users.id, userId));
 }
 
 export async function changePassword(userId: string, current: string, next: string): Promise<void> {
-  const user = getUser(userId);
+  const user = await getUser(userId);
   if (!user || !(await verifyPassword(current, user.passwordHash))) {
     throw new UserFacingError("Your current password is incorrect.");
   }
   const passwordHash = await hashPassword(next);
-  db.update(users).set({ passwordHash }).where(eq(users.id, userId)).run();
-  audit(db, { actorId: userId, action: "user.password_changed", entityId: userId });
+  await db.update(users).set({ passwordHash }).where(eq(users.id, userId));
+  await audit(db, { actorId: userId, action: "user.password_changed", entityId: userId });
 }
 
 /** Always behaves the same whether or not the email exists (no account enumeration). */
 export async function requestPasswordReset(email: string): Promise<void> {
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
   if (!user) return;
 
   const token = secureToken();
-  db.insert(passwordResetTokens)
-    .values({ id: sha256(token), userId: user.id, expiresAt: new Date(Date.now() + RESET_TOKEN_MINUTES * 60_000) })
-    .run();
+  await db
+    .insert(passwordResetTokens)
+    .values({ id: sha256(token), userId: user.id, expiresAt: new Date(Date.now() + RESET_TOKEN_MINUTES * 60_000) });
 
   await getMailer().send({
     to: user.email,
@@ -148,24 +152,26 @@ export async function requestPasswordReset(email: string): Promise<void> {
 }
 
 export async function resetPassword(token: string, password: string): Promise<void> {
-  const row = db
-    .select()
-    .from(passwordResetTokens)
-    .where(
-      and(
-        eq(passwordResetTokens.id, sha256(token)),
-        isNull(passwordResetTokens.usedAt),
-        gt(passwordResetTokens.expiresAt, new Date()),
-      ),
-    )
-    .get();
-  if (!row) throw new UserFacingError("This reset link is invalid or has expired. Please request a new one.");
-
   const passwordHash = await hashPassword(password);
-  db.transaction((tx) => {
-    tx.update(users).set({ passwordHash }).where(eq(users.id, row.userId)).run();
-    tx.update(passwordResetTokens).set({ usedAt: new Date() }).where(eq(passwordResetTokens.id, row.id)).run();
-    audit(tx, { actorId: row.userId, action: "user.password_reset", entityId: row.userId });
+  const userId = await db.transaction(async (tx) => {
+    // Claim the token atomically so it can be used exactly once.
+    const claimed = await first(
+      tx
+        .update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(passwordResetTokens.id, sha256(token)),
+            isNull(passwordResetTokens.usedAt),
+            gt(passwordResetTokens.expiresAt, new Date()),
+          ),
+        )
+        .returning({ userId: passwordResetTokens.userId }),
+    );
+    if (!claimed) throw new UserFacingError("This reset link is invalid or has expired. Please request a new one.");
+    await tx.update(users).set({ passwordHash }).where(eq(users.id, claimed.userId));
+    await audit(tx, { actorId: claimed.userId, action: "user.password_reset", entityId: claimed.userId });
+    return claimed.userId;
   });
-  revokeAllSessions(row.userId);
+  await revokeAllSessions(userId);
 }

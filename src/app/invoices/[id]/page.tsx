@@ -15,12 +15,12 @@ export const metadata: Metadata = { title: "Invoice" };
 
 export default async function InvoicePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ placed?: string; paid?: string }> }) {
   const user = await requireUser();
-  const order = getOrder((await params).id, user);
+  const order = await getOrder((await params).id, user);
   if (!order) notFound();
   const query = await searchParams;
   const placed = query.placed === "1";
 
-  const keys = order.kind === "partner_bulk" ? listLicenceKeys(order.userId).filter((k) => order.items.some((i) => i.id === k.key.orderItemId)) : [];
+  const keys = order.kind === "partner_bulk" ? (await listLicenceKeys(order.userId)).filter((k) => order.items.some((i) => i.id === k.key.orderItemId)) : [];
 
   return (
     <div className="container-page max-w-3xl py-10">

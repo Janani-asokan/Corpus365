@@ -18,12 +18,12 @@ import { QuoteForm } from "@/components/catalog/quote-form";
 type Params = Promise<{ slug: string }>;
 
 export async function generateMetadata({ params }: { params: Params }): Promise<Metadata> {
-  const product = getProductBySlug((await params).slug);
+  const product = await getProductBySlug((await params).slug);
   return product ? { title: product.name, description: product.tagline } : { title: "Not found" };
 }
 
 export default async function ProductPage({ params }: { params: Params }) {
-  const product = getProductBySlug((await params).slug);
+  const product = await getProductBySlug((await params).slug);
   if (!product) notFound();
   const user = await getCurrentUser();
 

@@ -26,13 +26,13 @@ export async function updateLeadStatusAction(form: FormData): Promise<void> {
   const partner = await requireUser(["partner"]);
   const parsed = leadStatusSchema.safeParse(formToObject(form));
   if (!parsed.success) return;
-  leads.updateLeadStatus(partner.id, parsed.data.leadId, parsed.data.status);
+  await leads.updateLeadStatus(partner.id, parsed.data.leadId, parsed.data.status);
   revalidatePath("/partner/clients");
 }
 
 export async function deleteLeadAction(form: FormData): Promise<void> {
   const partner = await requireUser(["partner"]);
-  leads.deleteLead(partner.id, String(form.get("leadId") ?? ""));
+  await leads.deleteLead(partner.id, String(form.get("leadId") ?? ""));
   revalidatePath("/partner/clients");
 }
 

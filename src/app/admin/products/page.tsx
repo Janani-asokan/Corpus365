@@ -18,7 +18,7 @@ export const metadata: Metadata = { title: "Catalogue" };
 
 export default async function AdminProductsPage() {
   await requireUser(["admin"]);
-  const products = listProducts();
+  const products = await listProducts();
   return (
     <>
       <PageHeader title="Catalogue" description="Control what clients can buy. Placeholder prices until suppliers are confirmed." />

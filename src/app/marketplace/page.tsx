@@ -26,9 +26,9 @@ export default async function MarketplacePage({ searchParams }: { searchParams: 
   const params = await searchParams;
   const type = PRODUCT_TYPES.includes(params.type as ProductType) ? (params.type as ProductType) : undefined;
   const query = params.q?.trim().slice(0, 60) || undefined;
-  const categories = listCategories().filter((c) => !type || c.type === type);
+  const categories = (await listCategories()).filter((c) => !type || c.type === type);
   const category = categories.some((c) => c.category === params.category) ? params.category : undefined;
-  const products = listProducts({ type, category, query });
+  const products = await listProducts({ type, category, query });
 
   const tabs = [
     { label: "All", value: undefined },

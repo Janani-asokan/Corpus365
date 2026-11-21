@@ -1,5 +1,6 @@
-import { and, count, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db, type Tx } from "@/server/db/client";
+import { first, isUniqueViolation, single } from "@/server/db/query";
 import {
   licenceKeys,
   orderItems,
@@ -19,7 +20,7 @@ import type { OrderKind } from "@/domain/constants";
 import { UserFacingError } from "@/lib/errors";
 import { licenceKey } from "@/lib/random";
 import { findApprovedPartnerByCode, getPartnerProfile } from "./partner.service";
-import { listPartnerCatalog } from "./catalog.service";
+import { isUuid, listPartnerCatalog } from "./catalog.service";
 import { audit } from "./audit.service";
 import { beginPayment, type Payer, type PaymentOutcome } from "./payment.service";
 
@@ -55,38 +56,25 @@ export interface PricedLine {
  * Prices cart lines from the database. The cart cookie holds only ids and
  * quantities, so prices can never be tampered with client-side.
  */
-export function priceRetailLines(lines: readonly CartLine[]): PricedLine[] {
-  if (lines.length === 0) return [];
-  const productRows = db.select().from(products).where(inArray(products.id, lines.map((l) => l.productId))).all();
-  const planIds = lines.map((l) => l.planId).filter((id): id is string => Boolean(id));
-  const planRows = planIds.length ? db.select().from(plans).where(inArray(plans.id, planIds)).all() : [];
+export async function priceRetailLines(lines: readonly CartLine[]): Promise<PricedLine[]> {
+  const valid = lines.filter((l) => isUuid(l.productId) && (l.planId === null || isUuid(l.planId)));
+  if (valid.length === 0) return [];
+  const productRows = await db.select().from(products).where(inArray(products.id, valid.map((l) => l.productId)));
+  const planIds = valid.map((l) => l.planId).filter((id): id is string => Boolean(id));
+  const planRows = planIds.length ? await db.select().from(plans).where(inArray(plans.id, planIds)) : [];
 
   const priced: PricedLine[] = [];
-  for (const line of lines) {
+  for (const line of valid) {
     const product = productRows.find((p) => p.id === line.productId);
     if (!product || product.status !== "live") continue; // silently drop unavailable items
 
     if (product.type === "app") {
       const plan = planRows.find((p) => p.id === line.planId && p.productId === product.id);
       if (!plan) continue;
-      priced.push({
-        product,
-        plan,
-        quantity: 1,
-        unitPrice: plan.price,
-        lineTotal: plan.price,
-        description: `${product.name} · ${plan.name}`,
-      });
+      priced.push({ product, plan, quantity: 1, unitPrice: plan.price, lineTotal: plan.price, description: `${product.name} · ${plan.name}` });
     } else if (product.unitPrice) {
       const quantity = Math.min(Math.max(1, Math.floor(line.quantity)), MAX_HARDWARE_QUANTITY);
-      priced.push({
-        product,
-        plan: null,
-        quantity,
-        unitPrice: product.unitPrice,
-        lineTotal: product.unitPrice * quantity,
-        description: product.name,
-      });
+      priced.push({ product, plan: null, quantity, unitPrice: product.unitPrice, lineTotal: product.unitPrice * quantity, description: product.name });
     }
   }
   return priced;
@@ -99,42 +87,33 @@ export function priceRetailLines(lines: readonly CartLine[]): PricedLine[] {
  * fixed on the client's account, so clients cannot be "poached" later.
  * Partners can never be credited for their own purchases.
  */
-function resolveAttribution(
-  tx: Tx,
-  buyerId: string,
-  codes: { entered?: string | null; cookie?: string | null },
-): string | null {
-  const buyer = tx.select().from(users).where(eq(users.id, buyerId)).get();
+async function resolveAttribution(tx: Tx, buyerId: string, codes: { entered?: string | null; cookie?: string | null }): Promise<string | null> {
+  const buyer = await first(tx.select().from(users).where(eq(users.id, buyerId)).limit(1).for("update"));
   if (!buyer) throw new UserFacingError("Account not found.");
 
   if (buyer.referredByPartnerId) {
-    const profile = getPartnerProfile(buyer.referredByPartnerId, tx);
+    const profile = await getPartnerProfile(buyer.referredByPartnerId, tx);
     return profile?.status === "approved" ? profile.userId : null;
   }
 
   const entered = codes.entered?.trim();
   if (entered) {
-    const partner = findApprovedPartnerByCode(entered, tx);
+    const partner = await findApprovedPartnerByCode(entered, tx);
     if (!partner) throw new UserFacingError("That partner code is not valid. Check it with your partner or leave it blank.");
     return lockAttribution(tx, buyerId, partner.userId);
   }
 
-  const fromCookie = codes.cookie ? findApprovedPartnerByCode(codes.cookie, tx) : null;
+  const fromCookie = codes.cookie ? await findApprovedPartnerByCode(codes.cookie, tx) : null;
   return fromCookie ? lockAttribution(tx, buyerId, fromCookie.userId) : null;
 }
 
-function lockAttribution(tx: Tx, buyerId: string, partnerId: string): string | null {
+async function lockAttribution(tx: Tx, buyerId: string, partnerId: string): Promise<string | null> {
   if (partnerId === buyerId) return null;
-  tx.update(users).set({ referredByPartnerId: partnerId }).where(eq(users.id, buyerId)).run();
+  await tx.update(users).set({ referredByPartnerId: partnerId }).where(eq(users.id, buyerId));
   return partnerId;
 }
 
 /* ---------------------------------------------------------------- ordering */
-
-function nextOrderNumber(tx: Tx): string {
-  const total = tx.select({ value: count() }).from(orders).get()?.value ?? 0;
-  return `C365-${String(1001 + total).padStart(6, "0")}`;
-}
 
 interface NewOrderLine {
   productId: string;
@@ -145,7 +124,8 @@ interface NewOrderLine {
   lineTotal: number;
 }
 
-export function createPendingOrder(
+/** The order number comes from a database sequence, so concurrent checkouts never collide. */
+async function createPendingOrder(
   tx: Tx,
   input: {
     userId: string;
@@ -156,28 +136,26 @@ export function createPendingOrder(
     subscriptionId?: string | null;
     now: Date;
   },
-): Order {
+): Promise<Order> {
   const totals = computeTotals(input.lines.map((l) => l.lineTotal));
-  const order = tx
-    .insert(orders)
-    .values({
-      number: nextOrderNumber(tx),
-      userId: input.userId,
-      partnerId: input.partnerId,
-      kind: input.kind,
-      status: "pending",
-      ...totals,
-      billingName: input.billing.billingName,
-      billingCompany: input.billing.billingCompany ?? null,
-      billingGstin: input.billing.billingGstin ?? null,
-      subscriptionId: input.subscriptionId ?? null,
-      createdAt: input.now,
-    })
-    .returning()
-    .get();
-  tx.insert(orderItems)
-    .values(input.lines.map((line) => ({ ...line, orderId: order.id })))
-    .run();
+  const order = await single(
+    tx
+      .insert(orders)
+      .values({
+        userId: input.userId,
+        partnerId: input.partnerId,
+        kind: input.kind,
+        status: "pending",
+        ...totals,
+        billingName: input.billing.billingName,
+        billingCompany: input.billing.billingCompany ?? null,
+        billingGstin: input.billing.billingGstin ?? null,
+        subscriptionId: input.subscriptionId ?? null,
+        createdAt: input.now,
+      })
+      .returning(),
+  );
+  await tx.insert(orderItems).values(input.lines.map((line) => ({ ...line, orderId: order.id })));
   return order;
 }
 
@@ -192,22 +170,26 @@ export async function checkout(input: {
   now?: Date;
 }): Promise<PaymentOutcome> {
   const now = input.now ?? new Date();
-  const priced = priceRetailLines(input.lines);
+  const priced = await priceRetailLines(input.lines);
   if (priced.length === 0) throw new UserFacingError("Your cart is empty or its items are no longer available.");
 
-  const order = db.transaction((tx) => {
-    for (const line of priced.filter((l) => l.product.type === "app")) {
-      const active = tx
-        .select({ id: subscriptions.id })
-        .from(subscriptions)
-        .where(and(eq(subscriptions.userId, input.buyer.id), eq(subscriptions.productId, line.product.id), eq(subscriptions.status, "active")))
-        .get();
+  const order = await db.transaction(async (tx) => {
+    const appIds = priced.filter((l) => l.product.type === "app").map((l) => l.product.id);
+    if (appIds.length) {
+      const active = await first(
+        tx
+          .select({ productId: subscriptions.productId })
+          .from(subscriptions)
+          .where(and(eq(subscriptions.userId, input.buyer.id), inArray(subscriptions.productId, appIds), eq(subscriptions.status, "active")))
+          .limit(1),
+      );
       if (active) {
-        throw new UserFacingError(`You already have an active ${line.product.name} subscription. Renew it from your account instead.`);
+        const name = priced.find((l) => l.product.id === active.productId)!.product.name;
+        throw new UserFacingError(`You already have an active ${name} subscription. Renew it from your account instead.`);
       }
     }
 
-    const partnerId = resolveAttribution(tx, input.buyer.id, { entered: input.partnerCode, cookie: input.referralCookie });
+    const partnerId = await resolveAttribution(tx, input.buyer.id, { entered: input.partnerCode, cookie: input.referralCookie });
     return createPendingOrder(tx, {
       userId: input.buyer.id,
       partnerId,
@@ -230,117 +212,138 @@ export async function checkout(input: {
 
 /* ------------------------------------------------------------------ trials */
 
-export function startTrial(input: { userId: string; productId: string; referralCookie?: string | null; now?: Date }): Subscription {
+export async function startTrial(input: { userId: string; productId: string; referralCookie?: string | null; now?: Date }): Promise<Subscription> {
   const now = input.now ?? new Date();
-  return db.transaction((tx) => {
-    const product = tx.select().from(products).where(eq(products.id, input.productId)).get();
-    if (!product || product.type !== "app" || product.status !== "live" || !product.trialDays) {
-      throw new UserFacingError("A free trial is not available for this product.");
-    }
-    const previous = tx
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.productId, product.id)))
-      .get();
-    if (previous) throw new UserFacingError(`You have already used your ${product.name} trial. Choose a plan to continue.`);
+  const product = await getProduct(input.productId);
+  if (!product || product.type !== "app" || product.status !== "live" || !product.trialDays) {
+    throw new UserFacingError("A free trial is not available for this product.");
+  }
+  const trialDays = product.trialDays;
+  const alreadyUsed = new UserFacingError(`You have already used your ${product.name} trial. Choose a plan to continue.`);
 
-    const partnerId = resolveAttribution(tx, input.userId, { cookie: input.referralCookie });
-    return tx
-      .insert(subscriptions)
-      .values({
-        userId: input.userId,
-        productId: product.id,
-        planId: null,
-        partnerId,
-        status: "trialing",
-        licenseKey: licenceKey(),
-        currentPeriodStart: now,
-        currentPeriodEnd: addDays(now, product.trialDays),
-        createdAt: now,
-      })
-      .returning()
-      .get();
-  });
+  try {
+    return await db.transaction(async (tx) => {
+      const previous = await first(
+        tx.select({ id: subscriptions.id }).from(subscriptions).where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.productId, product.id))).limit(1),
+      );
+      if (previous) throw alreadyUsed;
+
+      const partnerId = await resolveAttribution(tx, input.userId, { cookie: input.referralCookie });
+      return single(
+        tx
+          .insert(subscriptions)
+          .values({
+            userId: input.userId,
+            productId: product.id,
+            planId: null,
+            partnerId,
+            status: "trialing",
+            licenseKey: licenceKey(),
+            currentPeriodStart: now,
+            currentPeriodEnd: addDays(now, trialDays),
+            createdAt: now,
+          })
+          .returning(),
+      );
+    });
+  } catch (error) {
+    // Two clicks at once: the (user, product) unique constraint lets only one through.
+    if (isUniqueViolation(error, "subscriptions_user_product_key")) throw alreadyUsed;
+    throw error;
+  }
+}
+
+async function getProduct(productId: string): Promise<Product | undefined> {
+  if (!isUuid(productId)) return undefined;
+  return first(db.select().from(products).where(eq(products.id, productId)).limit(1));
 }
 
 /* ---------------------------------------------------------------- renewals */
 
 /** Creates (but does not charge) the renewal order for a paid subscription. */
-export function createRenewalOrder(subscriptionId: string, now: Date, userId?: string): { order: Order; payer: Payer; description: string } {
-  const row = db
-    .select({ subscription: subscriptions, plan: plans, product: products, user: users })
-    .from(subscriptions)
-    .innerJoin(products, eq(products.id, subscriptions.productId))
-    .innerJoin(users, eq(users.id, subscriptions.userId))
-    .leftJoin(plans, eq(plans.id, subscriptions.planId))
-    .where(eq(subscriptions.id, subscriptionId))
-    .get();
+export async function createRenewalOrder(subscriptionId: string, now: Date, userId?: string): Promise<{ order: Order; payer: Payer; description: string }> {
+  if (!isUuid(subscriptionId)) throw new UserFacingError("Subscription not found.");
+  const row = await first(
+    db
+      .select({ subscription: subscriptions, plan: plans, product: products, user: users })
+      .from(subscriptions)
+      .innerJoin(products, eq(products.id, subscriptions.productId))
+      .innerJoin(users, eq(users.id, subscriptions.userId))
+      .leftJoin(plans, eq(plans.id, subscriptions.planId))
+      .where(eq(subscriptions.id, subscriptionId))
+      .limit(1),
+  );
 
   if (!row || (userId && row.subscription.userId !== userId)) throw new UserFacingError("Subscription not found.");
   const { subscription, plan, product, user } = row;
   if (!plan || subscription.status === "trialing") throw new UserFacingError("Choose a plan to continue after your trial.");
 
   const description = `${product.name} · ${plan.name} renewal`;
-  const order = db.transaction((tx) =>
-    createPendingOrder(tx, {
-      userId: user.id,
-      partnerId: subscription.partnerId,
-      kind: "renewal",
-      subscriptionId: subscription.id,
-      billing: { billingName: user.name, billingCompany: user.companyName },
-      now,
-      lines: [{ productId: product.id, planId: plan.id, description, quantity: 1, unitPrice: plan.price, lineTotal: plan.price }],
-    }),
-  );
-  return { order, payer: user, description };
+  try {
+    const order = await db.transaction((tx) =>
+      createPendingOrder(tx, {
+        userId: user.id,
+        partnerId: subscription.partnerId,
+        kind: "renewal",
+        subscriptionId: subscription.id,
+        billing: { billingName: user.name, billingCompany: user.companyName },
+        now,
+        lines: [{ productId: product.id, planId: plan.id, description, quantity: 1, unitPrice: plan.price, lineTotal: plan.price }],
+      }),
+    );
+    return { order, payer: user, description };
+  } catch (error) {
+    if (isUniqueViolation(error, "orders_one_open_renewal_key")) {
+      throw new UserFacingError("A renewal payment is already open for this subscription. Use the Pay now link on your Subscriptions page.");
+    }
+    throw error;
+  }
 }
 
 /** Client-initiated renewal ("Renew now"): paid on-session through checkout. */
 export async function renewSubscription(input: { subscriptionId: string; userId?: string; now?: Date }): Promise<PaymentOutcome> {
   const now = input.now ?? new Date();
-  const { order, payer, description } = createRenewalOrder(input.subscriptionId, now, input.userId);
+  const { order, payer, description } = await createRenewalOrder(input.subscriptionId, now, input.userId);
   return beginPayment(order, payer, description, now);
 }
 
-/** An unpaid renewal link for a subscription, if one is outstanding. */
-export function pendingRenewalOrder(subscriptionId: string): Order | null {
+/** The unpaid renewal order for a subscription, if one is open. */
+export async function pendingRenewalOrder(subscriptionId: string): Promise<Order | null> {
   return (
-    db
-      .select()
-      .from(orders)
-      .where(and(eq(orders.subscriptionId, subscriptionId), eq(orders.kind, "renewal"), eq(orders.status, "pending")))
-      .orderBy(desc(orders.createdAt))
-      .get() ?? null
+    (await first(
+      db
+        .select()
+        .from(orders)
+        .where(and(eq(orders.subscriptionId, subscriptionId), eq(orders.kind, "renewal"), eq(orders.status, "pending")))
+        .limit(1),
+    )) ?? null
   );
 }
 
-export function setCancelAtPeriodEnd(userId: string, subscriptionId: string, cancel: boolean): void {
-  const result = db
+export async function setCancelAtPeriodEnd(userId: string, subscriptionId: string, cancel: boolean): Promise<void> {
+  if (!isUuid(subscriptionId)) throw new UserFacingError("Subscription not found.");
+  const updated = await db
     .update(subscriptions)
     .set({ cancelAtPeriodEnd: cancel })
     .where(and(eq(subscriptions.id, subscriptionId), eq(subscriptions.userId, userId), eq(subscriptions.status, "active")))
-    .run();
-  if (result.changes === 0) throw new UserFacingError("Subscription not found or not active.");
+    .returning({ id: subscriptions.id });
+  if (updated.length === 0) throw new UserFacingError("Subscription not found or not active.");
 }
 
 /* ------------------------------------------------------ partner bulk orders */
 
-export async function placePartnerBulkOrder(input: {
-  partner: Payer;
-  lines: { productId: string; quantity: number }[];
-  now?: Date;
-}): Promise<PaymentOutcome> {
+export async function placePartnerBulkOrder(input: { partner: Payer; lines: { productId: string; quantity: number }[]; now?: Date }): Promise<PaymentOutcome> {
   const now = input.now ?? new Date();
-  const profile = getPartnerProfile(input.partner.id);
+  const profile = await getPartnerProfile(input.partner.id);
   if (profile?.status !== "approved") throw new UserFacingError("Bulk ordering opens once your partner account is approved.");
 
-  const catalog = listPartnerCatalog();
+  const catalog = await listPartnerCatalog();
   const lines = input.lines
     .filter((l) => l.quantity > 0)
     .map((line) => {
       const item = catalog.find((c) => c.id === line.productId);
       if (!item) throw new UserFacingError("One of the selected products is not available for bulk ordering.");
-      if (line.quantity < item.minQuantity || line.quantity > MAX_BULK_QUANTITY) {
+      if (!Number.isInteger(line.quantity) || line.quantity < item.minQuantity || line.quantity > MAX_BULK_QUANTITY) {
         throw new UserFacingError(`${item.name}: order between ${item.minQuantity} and ${MAX_BULK_QUANTITY} units.`);
       }
       const unitPrice = unitPriceForQuantity(item.tiers, line.quantity)!;
@@ -355,7 +358,7 @@ export async function placePartnerBulkOrder(input: {
     });
   if (lines.length === 0) throw new UserFacingError("Enter a quantity for at least one product.");
 
-  const order = db.transaction((tx) =>
+  const order = await db.transaction((tx) =>
     createPendingOrder(tx, {
       userId: input.partner.id,
       partnerId: null, // partners earn their margin on resale, not commission on their own purchases
@@ -369,42 +372,35 @@ export async function placePartnerBulkOrder(input: {
 }
 
 /** A client activates a one-year subscription using a key bought by their partner. */
-export function redeemLicenceKey(input: { userId: string; key: string; now?: Date }): Subscription {
+export async function redeemLicenceKey(input: { userId: string; key: string; now?: Date }): Promise<Subscription> {
   const now = input.now ?? new Date();
-  return db.transaction((tx) => {
-    const key = tx
-      .select()
-      .from(licenceKeys)
-      .where(and(eq(licenceKeys.key, input.key.trim().toUpperCase()), isNull(licenceKeys.redeemedAt)))
-      .get();
+  return db.transaction(async (tx) => {
+    // Lock the key row so two people can't redeem the same key at once.
+    const key = await first(
+      tx
+        .select()
+        .from(licenceKeys)
+        .where(and(eq(licenceKeys.key, input.key.trim().toUpperCase()), isNull(licenceKeys.redeemedAt)))
+        .limit(1)
+        .for("update", { skipLocked: true }),
+    );
     if (!key) throw new UserFacingError("This licence key is not valid or has already been used.");
 
-    const yearly = tx
-      .select()
-      .from(plans)
-      .where(and(eq(plans.productId, key.productId), eq(plans.interval, "year")))
-      .get();
-    const product = tx.select().from(products).where(eq(products.id, key.productId)).get();
+    const yearly = await first(tx.select().from(plans).where(and(eq(plans.productId, key.productId), eq(plans.interval, "year"))).limit(1));
+    const product = await first(tx.select().from(products).where(eq(products.id, key.productId)).limit(1));
     if (!yearly || !product) throw new UserFacingError("This licence key cannot be activated right now.");
 
-    const active = tx
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.productId, key.productId), eq(subscriptions.status, "active")))
-      .get();
-    if (active) throw new UserFacingError(`You already have an active ${product.name} subscription.`);
+    const existing = await first(
+      tx.select().from(subscriptions).where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.productId, key.productId))).limit(1).for("update"),
+    );
+    if (existing?.status === "active") throw new UserFacingError(`You already have an active ${product.name} subscription.`);
 
-    tx.update(licenceKeys).set({ redeemedAt: now, redeemedByUserId: input.userId }).where(eq(licenceKeys.id, key.id)).run();
-    const buyer = tx.select().from(users).where(eq(users.id, input.userId)).get();
+    await tx.update(licenceKeys).set({ redeemedAt: now, redeemedByUserId: input.userId }).where(eq(licenceKeys.id, key.id));
+    const buyer = await first(tx.select().from(users).where(eq(users.id, input.userId)).limit(1));
     if (buyer && !buyer.referredByPartnerId && buyer.id !== key.partnerId) {
-      tx.update(users).set({ referredByPartnerId: key.partnerId }).where(eq(users.id, buyer.id)).run();
+      await tx.update(users).set({ referredByPartnerId: key.partnerId }).where(eq(users.id, buyer.id));
     }
 
-    const existing = tx
-      .select()
-      .from(subscriptions)
-      .where(and(eq(subscriptions.userId, input.userId), eq(subscriptions.productId, key.productId)))
-      .get();
     const values = {
       status: "active" as const,
       planId: yearly.id,
@@ -414,27 +410,25 @@ export function redeemLicenceKey(input: { userId: string; key: string; now?: Dat
       cancelAtPeriodEnd: false,
       fromLicenceKeyId: key.id,
     };
-    audit(tx, { actorId: input.userId, action: "licence.redeemed", entityId: key.id });
-    if (existing) {
-      return tx.update(subscriptions).set(values).where(eq(subscriptions.id, existing.id)).returning().get();
-    }
-    return tx
-      .insert(subscriptions)
-      .values({ ...values, userId: input.userId, productId: key.productId, licenseKey: licenceKey(), createdAt: now })
-      .returning()
-      .get();
+    await audit(tx, { actorId: input.userId, action: "licence.redeemed", entityId: key.id });
+    if (existing) return single(tx.update(subscriptions).set(values).where(eq(subscriptions.id, existing.id)).returning());
+    return single(
+      tx
+        .insert(subscriptions)
+        .values({ ...values, userId: input.userId, productId: key.productId, licenseKey: licenceKey(), createdAt: now })
+        .returning(),
+    );
   });
 }
 
-export function listLicenceKeys(partnerId: string) {
+export async function listLicenceKeys(partnerId: string) {
   return db
     .select({ key: licenceKeys, productName: products.name, redeemedBy: users.companyName })
     .from(licenceKeys)
     .innerJoin(products, eq(products.id, licenceKeys.productId))
     .leftJoin(users, eq(users.id, licenceKeys.redeemedByUserId))
     .where(eq(licenceKeys.partnerId, partnerId))
-    .orderBy(licenceKeys.redeemedAt)
-    .all();
+    .orderBy(asc(licenceKeys.redeemedAt), asc(licenceKeys.createdAt));
 }
 
 /* ----------------------------------------------------------------- queries */
@@ -442,42 +436,36 @@ export function listLicenceKeys(partnerId: string) {
 export type OrderWithItems = Order & { items: OrderItem[] };
 
 /** Orders shown to the customer: abandoned checkouts (pending without a payment link) are hidden. */
-export function listOrdersForUser(userId: string): Order[] {
-  return db
-    .select()
-    .from(orders)
-    .where(eq(orders.userId, userId))
-    .orderBy(desc(orders.createdAt))
-    .all()
-    .filter((o) => o.status !== "pending" || o.paymentUrl);
+export async function listOrdersForUser(userId: string): Promise<Order[]> {
+  const rows = await db.select().from(orders).where(eq(orders.userId, userId)).orderBy(desc(orders.createdAt));
+  return rows.filter((o) => o.status !== "pending" || o.paymentUrl);
 }
 
 /** Returns the order only if it belongs to the user (or for admins, any order). */
-export function getOrder(orderId: string, viewer: { id: string; role: string }): OrderWithItems | null {
-  const order = db.select().from(orders).where(eq(orders.id, orderId)).get();
+export async function getOrder(orderId: string, viewer: { id: string; role: string }): Promise<OrderWithItems | null> {
+  if (!isUuid(orderId)) return null;
+  const order = await first(db.select().from(orders).where(eq(orders.id, orderId)).limit(1));
   if (!order) return null;
   if (viewer.role !== "admin" && order.userId !== viewer.id) return null;
-  const items = db.select().from(orderItems).where(eq(orderItems.orderId, order.id)).all();
+  const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
   return { ...order, items };
 }
 
-export function listSubscriptionsForUser(userId: string) {
+export async function listSubscriptionsForUser(userId: string) {
   return db
     .select({ subscription: subscriptions, product: products, plan: plans })
     .from(subscriptions)
     .innerJoin(products, eq(products.id, subscriptions.productId))
     .leftJoin(plans, eq(plans.id, subscriptions.planId))
     .where(eq(subscriptions.userId, userId))
-    .orderBy(desc(subscriptions.createdAt))
-    .all();
+    .orderBy(desc(subscriptions.createdAt));
 }
 
-export function listAllOrders(limit = 200) {
+export async function listAllOrders(limit = 200) {
   return db
     .select({ order: orders, customer: users.name, company: users.companyName })
     .from(orders)
     .innerJoin(users, eq(users.id, orders.userId))
     .orderBy(desc(orders.createdAt))
-    .limit(limit)
-    .all();
+    .limit(limit);
 }

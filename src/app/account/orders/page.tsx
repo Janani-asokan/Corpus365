@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "Orders & invoices" };
 
 export default async function OrdersPage() {
   const user = await requireUser(["client"]);
-  const orders = listOrdersForUser(user.id);
+  const orders = await listOrdersForUser(user.id);
 
   return (
     <>

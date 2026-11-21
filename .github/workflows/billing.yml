@@ -1,0 +1,22 @@
+# Daily billing job: ends trials, honours cancellations and sends Razorpay
+# renewal links. Needs repository secrets APP_URL (https://…) and CRON_SECRET.
+name: Daily billing
+
+on:
+  schedule:
+    - cron: "47 21 * * *" # 03:17 IST
+  workflow_dispatch:
+
+jobs:
+  bill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Run billing
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then echo "APP_URL/CRON_SECRET secrets not set; skipping."; exit 0; fi
+          curl --fail-with-body --retry 3 --retry-all-errors -sS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/cron/billing"

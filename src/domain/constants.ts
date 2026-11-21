@@ -1,5 +1,5 @@
 /**
- * Shared enumerations. SQLite has no native enum type, so these tuples are the
+ * Shared enumerations. These tuples are the
  * single source of truth for allowed values (used by the schema, validation
  * and UI alike).
  */

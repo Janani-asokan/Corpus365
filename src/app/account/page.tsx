@@ -1,12 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { Clock, KeyRound, Mail, Phone, RefreshCw, Store } from "lucide-react";
-import { eq } from "drizzle-orm";
 import { requireUser } from "@/server/auth/guards";
 import { listSubscriptionsForUser } from "@/server/services/order.service";
 import { getUser } from "@/server/services/user.service";
-import { db } from "@/server/db/client";
-import { users } from "@/server/db/schema";
+import { getPartnerContact } from "@/server/services/partner.service";
 import { daysUntil, formatDate } from "@/lib/format";
 import { PageHeader } from "@/components/ui/page-header";
 import { Stat } from "@/components/ui/stat";
@@ -23,15 +21,13 @@ export const metadata: Metadata = { title: "My account" };
 export default async function AccountOverviewPage({ searchParams }: { searchParams: Promise<{ welcome?: string }> }) {
   const user = await requireUser(["client"]);
   const { welcome } = await searchParams;
-  const subs = listSubscriptionsForUser(user.id);
+  const subs = await listSubscriptionsForUser(user.id);
   const active = subs.filter((s) => s.subscription.status === "active");
   const trials = subs.filter((s) => s.subscription.status === "trialing");
   const nextRenewal = active.map((s) => s.subscription.currentPeriodEnd).sort((a, b) => a.getTime() - b.getTime())[0];
 
-  const account = getUser(user.id);
-  const partner = account?.referredByPartnerId
-    ? db.select({ name: users.name, email: users.email, phone: users.phone, city: users.city }).from(users).where(eq(users.id, account.referredByPartnerId)).get()
-    : null;
+  const account = await getUser(user.id);
+  const partner = account?.referredByPartnerId ? await getPartnerContact(account.referredByPartnerId) : null;
 
   return (
     <>

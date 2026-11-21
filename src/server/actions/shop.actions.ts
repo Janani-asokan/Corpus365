@@ -22,11 +22,11 @@ export async function addToCartAction(_prev: ActionState, form: FormData): Promi
   const parsed = addToCartSchema.safeParse(formToObject(form));
   if (!parsed.success) return { ok: false, message: "Choose a plan or quantity first." };
 
-  const product = getProductById(parsed.data.productId);
+  const product = await getProductById(parsed.data.productId);
   if (!product || product.status !== "live") return { ok: false, message: "This product is not available to buy yet." };
 
   const isApp = product.type === "app";
-  const plan = parsed.data.planId ? getPlan(parsed.data.planId) : null;
+  const plan = parsed.data.planId ? await getPlan(parsed.data.planId) : null;
   if (isApp && plan?.productId !== product.id) return { ok: false, message: "Choose a plan first." };
 
   const lines = addLine(
@@ -91,7 +91,7 @@ export async function startTrialAction(_prev: ActionState, form: FormData): Prom
   }
 
   const result = await attempt(async () =>
-    orders.startTrial({ userId: user.id, productId, referralCookie: await readReferralCode() }),
+    await orders.startTrial({ userId: user.id, productId, referralCookie: await readReferralCode() }),
   );
   if (!result.ok) return result;
   revalidatePath("/account");

@@ -42,8 +42,8 @@ export async function setProductStatusAction(form: FormData): Promise<void> {
     .object({ productId: z.string().min(1), status: z.enum(PRODUCT_STATUSES) })
     .safeParse(formToObject(form));
   if (!parsed.success) return;
-  setProductStatus(parsed.data.productId, parsed.data.status);
-  audit(db, { actorId: admin.id, action: "product.status", entityId: parsed.data.productId, detail: parsed.data.status });
+  await setProductStatus(parsed.data.productId, parsed.data.status);
+  await audit(db, { actorId: admin.id, action: "product.status", entityId: parsed.data.productId, detail: parsed.data.status });
   revalidatePath("/", "layout");
 }
 
@@ -52,7 +52,7 @@ export async function runRenewalsAction(_prev: ActionState): Promise<ActionState
   let summary = "";
   const r = await attempt(async () => {
     const result = await processDueRenewals();
-    audit(db, { actorId: admin.id, action: "renewals.run", detail: JSON.stringify(result) });
+    await audit(db, { actorId: admin.id, action: "renewals.run", detail: JSON.stringify(result) });
     summary =
       `Renewed ${result.renewed}, payment links sent ${result.linksSent}, lapsed after grace ${result.lapsed}, ` +
       `cancelled ${result.cancelled}, trials ended ${result.trialsEnded}, failed ${result.failed}.`;
@@ -63,7 +63,7 @@ export async function runRenewalsAction(_prev: ActionState): Promise<ActionState
 
 export async function generatePayoutsAction(_prev: ActionState): Promise<ActionState> {
   const admin = await requireAdmin();
-  const { created, total } = generatePayouts(admin.id);
+  const { created, total } = await generatePayouts(admin.id);
   revalidatePath("/admin/payouts");
   if (created === 0) return { ok: true, message: "No cleared commissions to pay out right now." };
   return {
@@ -88,6 +88,6 @@ export async function setQuoteStatusAction(form: FormData): Promise<void> {
   await requireAdmin();
   const parsed = z.object({ quoteId: z.string().min(1), status: z.enum(QUOTE_STATUSES) }).safeParse(formToObject(form));
   if (!parsed.success) return;
-  setQuoteStatus(parsed.data.quoteId, parsed.data.status);
+  await setQuoteStatus(parsed.data.quoteId, parsed.data.status);
   revalidatePath("/admin/quotes");
 }

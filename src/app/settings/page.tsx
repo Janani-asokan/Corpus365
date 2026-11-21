@@ -9,7 +9,7 @@ export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const user = await requireUser();
-  const profile = user.role === "partner" ? getPartnerProfile(user.id) : null;
+  const profile = user.role === "partner" ? await getPartnerProfile(user.id) : null;
 
   return (
     <>

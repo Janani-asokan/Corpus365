@@ -1,12 +1,9 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
 import { requireUser } from "@/server/auth/guards";
 import { getCart } from "@/server/cart";
 import { readReferralCode } from "@/server/referral";
-import { db } from "@/server/db/client";
-import { partnerProfiles, users } from "@/server/db/schema";
-import { findApprovedPartnerByCode } from "@/server/services/partner.service";
+import { findApprovedPartnerByCode, getPartnerContact } from "@/server/services/partner.service";
 import { getUser } from "@/server/services/user.service";
 import { paymentStatus } from "@/server/payments";
 import { formatMoney } from "@/lib/format";
@@ -17,30 +14,21 @@ import { CheckoutForm } from "@/components/forms/checkout-form";
 
 export const metadata: Metadata = { title: "Checkout" };
 
-function partnerName(userId: string) {
-  return db
-    .select({ name: users.name, code: partnerProfiles.code })
-    .from(partnerProfiles)
-    .innerJoin(users, eq(users.id, partnerProfiles.userId))
-    .where(eq(partnerProfiles.userId, userId))
-    .get();
-}
-
 export default async function CheckoutPage() {
   const user = await requireUser(["client"], "/checkout");
   const cart = await getCart();
   if (cart.lines.length === 0) redirect("/cart");
 
-  const account = getUser(user.id);
+  const account = await getUser(user.id);
   let partner: { code: string; name: string; locked: boolean } | null = null;
   if (account?.referredByPartnerId) {
-    const p = partnerName(account.referredByPartnerId);
-    if (p) partner = { ...p, locked: true };
+    const p = await getPartnerContact(account.referredByPartnerId);
+    if (p) partner = { code: p.code, name: p.name, locked: true };
   } else {
     const code = await readReferralCode();
-    const profile = code ? findApprovedPartnerByCode(code) : null;
-    const p = profile ? partnerName(profile.userId) : null;
-    if (p) partner = { ...p, locked: false };
+    const profile = code ? await findApprovedPartnerByCode(code) : null;
+    const p = profile ? await getPartnerContact(profile.userId) : null;
+    if (p) partner = { code: p.code, name: p.name, locked: false };
   }
 
   return (

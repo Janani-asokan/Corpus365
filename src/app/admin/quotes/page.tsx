@@ -16,7 +16,7 @@ export const metadata: Metadata = { title: "Quote requests" };
 
 export default async function AdminQuotesPage() {
   await requireUser(["admin"]);
-  const quotes = listQuoteRequests();
+  const quotes = await listQuoteRequests();
   return (
     <>
       <PageHeader title="Quote requests" description="Site-priced hardware. Assign to the referring partner, or a partner near the site." />

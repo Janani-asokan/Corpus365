@@ -20,8 +20,8 @@ const TARGETS = { payingClients: 2000, partners: 50, channelCost: 0.3 };
 
 export default async function AdminOverviewPage() {
   await requireUser(["admin"]);
-  const m = getAdminMetrics();
-  const audit = listRecentAudit(12);
+  const m = await getAdminMetrics();
+  const audit = await listRecentAudit(12);
   const payments = paymentStatus();
 
   return (

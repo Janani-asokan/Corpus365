@@ -17,8 +17,8 @@ export default async function SignupPage({ searchParams }: { searchParams: Promi
   if (user) redirect(safeNextPath(next, HOME_FOR_ROLE[user.role]));
 
   const code = await readReferralCode();
-  const partner = code ? findApprovedPartnerByCode(code) : null;
-  const partnerUser = partner ? getUser(partner.userId) : null;
+  const partner = code ? await findApprovedPartnerByCode(code) : null;
+  const partnerUser = partner ? await getUser(partner.userId) : null;
 
   return (
     <AuthCard

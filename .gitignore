@@ -7,5 +7,6 @@ data/*.db*
 *.tsbuildinfo
 next-env.d.ts
 coverage/
-data/test-*
+
 undefined/
+dist/

@@ -20,7 +20,10 @@ export default async function AdminPartnersPage({ searchParams }: { searchParams
   await requireUser(["admin"]);
   const requested = (await searchParams).status;
   const status = PARTNER_STATUSES.includes(requested as PartnerStatus) ? (requested as PartnerStatus) : undefined;
-  const partners = listPartners(status);
+  const partners = await listPartners(status);
+  const performance = new Map(
+    await Promise.all(partners.map(async ({ user }) => [user.id, await getPerformance(user.id)] as const)),
+  );
 
   return (
     <>
@@ -46,7 +49,7 @@ export default async function AdminPartnersPage({ searchParams }: { searchParams
             <thead><tr><Th>Partner</Th><Th>Profile</Th><Th>Status</Th><Th>Tier · clients</Th><Th>Actions</Th></tr></thead>
             <tbody>
               {partners.map(({ user, profile }) => {
-                const perf = getPerformance(user.id);
+                const perf = performance.get(user.id)!;
                 return (
                   <tr key={user.id}>
                     <Td>

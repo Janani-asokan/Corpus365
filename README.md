@@ -6,14 +6,17 @@ A two-sided marketplace: **businesses** browse apps and hardware, start free tri
 
 ## Quick start
 
-Requires Node.js 20+.
+Requires Node.js 22+ and PostgreSQL 16.
 
 ```bash
 npm install
-cp .env.example .env        # optional; defaults work locally
-npm run setup               # create the database and load demo data
-npm run dev                 # http://localhost:3000
+createdb corpus365                 # and corpus365_test for the test suite
+cp .env.example .env               # set DATABASE_URL
+npm run setup                      # migrate + load demo data
+npm run dev                        # http://localhost:3000
 ```
+
+Production runs on DigitalOcean (App Platform plus Managed PostgreSQL). See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The schema and its guarantees are described in **[docs/DATABASE.md](docs/DATABASE.md)**.
 
 Demo accounts (seed data):
 
@@ -34,7 +37,10 @@ Emails (welcome, password reset, receipts, payouts) are printed to the server lo
 | `npm test`          | Unit and integration tests (business rules, payment flows) |
 | `npm run lint`      | ESLint                                     |
 | `npm run typecheck` | TypeScript                                 |
-| `npm run db:reset`  | Recreate the database with fresh demo data |
+| `npm run db:migrate` | Apply pending migrations                  |
+| `npm run db:seed`   | Load demo data (development only)          |
+| `npm run db:reset`  | Wipe and recreate with demo data (local only) |
+| `npm run db:bootstrap` | Production: launch catalogue + first admin (idempotent) |
 | `npm run db:generate` | Generate a migration after editing the schema |
 
 ## Payments (Razorpay)
@@ -88,7 +94,7 @@ In production, the site refuses test payments unless `ALLOW_TEST_PAYMENTS=true`,
 src/
   domain/        Pure business rules: money, tiers, commission, pricing. No I/O; unit-tested.
   server/
-    db/          Drizzle schema + SQLite connection
+    db/          Drizzle schema (PostgreSQL) + connection pool
     auth/        Sessions, password hashing, rate limiting, role guards
     services/    Use cases (orders, subscriptions, commissions, payouts, partners…) in transactions
     actions/     Server Actions: validate input → authorise → call a service
@@ -108,7 +114,8 @@ Dependencies point inwards: routes → actions → services → domain. The doma
 - **Launch bonus**: a fixed amount on each of the first 3 sales within 60 days of approval.
 - **Attribution** is first-touch and then locked to the client's account. Partners can never be credited for their own purchases.
 - **Commissions** store the tier and rate at the time of sale, are held for a 14-day refund window, then bundled into a monthly payout. Their status moves from *pending* to *in payout* to *paid*, so nothing can be paid twice.
-- **Money** is integer paise and rates are basis points, so there are no floating-point errors.
+- **Money** is integer paise (`bigint`) and rates are basis points, so there are no floating-point errors.
+- The database enforces the key rules itself (see docs/DATABASE.md).
 
 ### Security
 
@@ -132,7 +139,7 @@ Dependencies point inwards: routes → actions → services → domain. The doma
 
 1. **Payments**: configure Razorpay (see *Going live with Razorpay* above).
 2. **Email**: implement `Mailer` (e.g. SES or Postmark) and register it with `setMailer`.
-3. **Database**: SQLite suits a single server. For multiple instances, switch the Drizzle driver to Postgres (the schema maps one to one) and move the rate limiter to Redis.
+3. **Scaling out**: before running more than one instance, move the login rate limiter to Redis (DigitalOcean Managed Valkey), behind the same interface.
 4. **Billing job**: call `POST /api/cron/billing` daily. Admins can also run it from Admin → "Process due renewals".
 5. **Content**: product prices, the launch bonus amount and support contacts are placeholders (see `scripts/seed.ts`, `domain/program.ts`, `lib/config.ts`). The partner agreement page is a plain-language summary and needs legal review.
 6. Set `APP_URL` to your public URL, so referral links and emails point to the right place.

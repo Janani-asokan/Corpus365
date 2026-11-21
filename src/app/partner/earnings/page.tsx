@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import { IndianRupee } from "lucide-react";
 import { requireUser } from "@/server/auth/guards";
@@ -20,10 +21,11 @@ export const metadata: Metadata = { title: "Earnings" };
 
 export default async function EarningsPage() {
   const user = await requireUser(["partner"]);
-  const profile = getPartnerProfile(user.id)!;
-  const summary = getEarningsSummary(user.id);
-  const commissions = listCommissions(user.id, 200);
-  const payouts = listPayouts(user.id);
+  const profile = await getPartnerProfile(user.id);
+  if (!profile) notFound();
+  const summary = await getEarningsSummary(user.id);
+  const commissions = await listCommissions(user.id, 200);
+  const payouts = await listPayouts(user.id);
 
   return (
     <>

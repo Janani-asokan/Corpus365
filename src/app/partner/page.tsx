@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import { Clock, IndianRupee, TrendingUp, Users } from "lucide-react";
 import { requireUser } from "@/server/auth/guards";
@@ -24,13 +25,14 @@ const KIND_TONE: Record<CommissionKind, Tone> = { sale: "info", renewal: "succes
 
 export default async function PartnerDashboardPage() {
   const user = await requireUser(["partner"]);
-  const profile = getPartnerProfile(user.id)!;
+  const profile = await getPartnerProfile(user.id);
+  if (!profile) notFound();
   const approved = profile.status === "approved";
-  const { performance, progress, renewalRate } = getPartnerOverview(user.id);
-  const earnings = getEarningsSummary(user.id);
-  const recent = listCommissions(user.id, 6);
-  const leads = listLeads(user.id);
-  const products = listProducts().filter((p) => p.status !== "coming_soon");
+  const { performance, progress, renewalRate } = await getPartnerOverview(user.id);
+  const earnings = await getEarningsSummary(user.id);
+  const recent = await listCommissions(user.id, 6);
+  const leads = await listLeads(user.id);
+  const products = (await listProducts()).filter((p) => p.status !== "coming_soon");
 
   return (
     <>

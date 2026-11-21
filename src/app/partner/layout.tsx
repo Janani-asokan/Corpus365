@@ -6,7 +6,7 @@ import { config } from "@/lib/config";
 
 export default async function PartnerLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser(["partner"], "/partner");
-  const profile = getPartnerProfile(user.id);
+  const profile = await getPartnerProfile(user.id);
 
   const banner =
     profile?.status === "pending" ? (

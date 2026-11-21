@@ -10,13 +10,13 @@ import { COOKIE, config } from "@/lib/config";
  * checkout, then sends the visitor to the product (or the marketplace).
  */
 export function GET(request: NextRequest, { params }: { params: Promise<{ code: string }> }) {
-  return params.then(({ code }) => {
+  return params.then(async ({ code }) => {
     const to = request.nextUrl.searchParams.get("to");
-    const product = to ? getProductBySlug(to) : null;
+    const product = to ? await getProductBySlug(to) : null;
     const destination = new URL(product ? `/marketplace/${product.slug}` : "/marketplace", request.url);
     const response = NextResponse.redirect(destination);
 
-    const partner = findApprovedPartnerByCode(code);
+    const partner = await findApprovedPartnerByCode(code);
     if (partner) {
       response.cookies.set(COOKIE.referral, partner.code, {
         httpOnly: true,

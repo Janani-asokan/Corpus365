@@ -49,7 +49,7 @@ export interface Cart {
 }
 
 export async function getCart(): Promise<Cart> {
-  const lines = priceRetailLines(await readCartLines());
+  const lines = await priceRetailLines(await readCartLines());
   return {
     lines,
     totals: computeTotals(lines.map((l) => l.lineTotal)),

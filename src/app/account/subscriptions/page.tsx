@@ -20,7 +20,12 @@ export const metadata: Metadata = { title: "Subscriptions" };
 export default async function SubscriptionsPage({ searchParams }: { searchParams: Promise<{ trial?: string; renewed?: string; payment?: string }> }) {
   const user = await requireUser(["client"]);
   const { trial, renewed, payment } = await searchParams;
-  const subs = listSubscriptionsForUser(user.id);
+  const subs = await listSubscriptionsForUser(user.id);
+  const dueBills = new Map(
+    await Promise.all(
+      subs.filter((s) => s.subscription.status === "active").map(async (s) => [s.subscription.id, await pendingRenewalOrder(s.subscription.id)] as const),
+    ),
+  );
 
   return (
     <>
@@ -39,7 +44,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
         <ul className="space-y-4">
           {subs.map(({ subscription, product, plan }) => {
             const days = daysUntil(subscription.currentPeriodEnd);
-            const due = subscription.status === "active" ? pendingRenewalOrder(subscription.id) : null;
+            const due = dueBills.get(subscription.id) ?? null;
             return (
               <li key={subscription.id}>
                 <Card className="p-5">

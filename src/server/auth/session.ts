@@ -2,6 +2,7 @@ import "server-only";
 import { cookies } from "next/headers";
 import { eq, lt } from "drizzle-orm";
 import { db } from "@/server/db/client";
+import { first } from "@/server/db/query";
 import { sessions, users, type User } from "@/server/db/schema";
 import { COOKIE, config } from "@/lib/config";
 import { secureToken, sha256 } from "@/lib/random";
@@ -18,7 +19,8 @@ const DAY = 86_400_000;
 export async function createSession(userId: string): Promise<void> {
   const token = secureToken();
   const expiresAt = new Date(Date.now() + SESSION_DAYS * DAY);
-  db.insert(sessions).values({ id: sha256(token), userId, expiresAt }).run();
+  await db.insert(sessions).values({ id: sha256(token), userId, expiresAt });
+  await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, userId));
   await setSessionCookie(token, expiresAt);
 }
 
@@ -28,37 +30,35 @@ export async function readSession(): Promise<SessionUser | null> {
   const token = (await cookies()).get(COOKIE.session)?.value;
   if (!token) return null;
 
-  const row = db
-    .select({
-      sessionId: sessions.id,
-      expiresAt: sessions.expiresAt,
-      id: users.id,
-      email: users.email,
-      name: users.name,
-      role: users.role,
-      companyName: users.companyName,
-      phone: users.phone,
-      city: users.city,
-    })
-    .from(sessions)
-    .innerJoin(users, eq(users.id, sessions.userId))
-    .where(eq(sessions.id, sha256(token)))
-    .get();
+  const row = await first(
+    db
+      .select({
+        sessionId: sessions.id,
+        expiresAt: sessions.expiresAt,
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        role: users.role,
+        companyName: users.companyName,
+        phone: users.phone,
+        city: users.city,
+      })
+      .from(sessions)
+      .innerJoin(users, eq(users.id, sessions.userId))
+      .where(eq(sessions.id, sha256(token)))
+      .limit(1),
+  );
 
   if (!row) return null;
   if (row.expiresAt.getTime() <= Date.now()) {
-    db.delete(sessions).where(eq(sessions.id, row.sessionId)).run();
+    await db.delete(sessions).where(eq(sessions.id, row.sessionId));
     return null;
   }
 
-  // Sliding expiry: extend active sessions. Cookies can only be written from
-  // actions/route handlers, so only the database row is extended here and the
-  // cookie is refreshed on the next sign-in-protected mutation.
+  // Sliding expiry. Cookies can only be written from actions/route handlers,
+  // so only the row is extended here; the cookie keeps its original expiry.
   if (row.expiresAt.getTime() - Date.now() < REFRESH_WHEN_DAYS_LEFT * DAY) {
-    db.update(sessions)
-      .set({ expiresAt: new Date(Date.now() + SESSION_DAYS * DAY) })
-      .where(eq(sessions.id, row.sessionId))
-      .run();
+    await db.update(sessions).set({ expiresAt: new Date(Date.now() + SESSION_DAYS * DAY) }).where(eq(sessions.id, row.sessionId));
   }
 
   const { sessionId: _sessionId, expiresAt: _expiresAt, ...user } = row;
@@ -68,17 +68,17 @@ export async function readSession(): Promise<SessionUser | null> {
 export async function destroySession(): Promise<void> {
   const store = await cookies();
   const token = store.get(COOKIE.session)?.value;
-  if (token) db.delete(sessions).where(eq(sessions.id, sha256(token))).run();
+  if (token) await db.delete(sessions).where(eq(sessions.id, sha256(token)));
   store.delete(COOKIE.session);
 }
 
 /** Signs the user out everywhere (e.g. after a password reset). */
-export function revokeAllSessions(userId: string): void {
-  db.delete(sessions).where(eq(sessions.userId, userId)).run();
+export async function revokeAllSessions(userId: string): Promise<void> {
+  await db.delete(sessions).where(eq(sessions.userId, userId));
 }
 
-export function purgeExpiredSessions(): void {
-  db.delete(sessions).where(lt(sessions.expiresAt, new Date())).run();
+export async function purgeExpiredSessions(): Promise<void> {
+  await db.delete(sessions).where(lt(sessions.expiresAt, new Date()));
 }
 
 async function setSessionCookie(token: string, expiresAt: Date): Promise<void> {

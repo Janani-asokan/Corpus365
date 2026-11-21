@@ -16,10 +16,10 @@ export const metadata: Metadata = { title: "Bulk ordering" };
 
 export default async function PartnerOrdersPage() {
   const user = await requireUser(["partner"]);
-  const approved = getPartnerProfile(user.id)?.status === "approved";
-  const catalog = listPartnerCatalog();
-  const orders = listOrdersForUser(user.id);
-  const keys = listLicenceKeys(user.id);
+  const approved = (await getPartnerProfile(user.id))?.status === "approved";
+  const catalog = await listPartnerCatalog();
+  const orders = await listOrdersForUser(user.id);
+  const keys = await listLicenceKeys(user.id);
   const unused = keys.filter((k) => !k.key.redeemedAt);
 
   return (

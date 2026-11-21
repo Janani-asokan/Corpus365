@@ -22,9 +22,9 @@ const PROMISES = [
   "Fixed published prices, honest earnings claims",
 ];
 
-export default function HomePage() {
-  const apps = listProducts({ type: "app" });
-  const hardware = listProducts({ type: "hardware" }).slice(0, 6);
+export default async function HomePage() {
+  const apps = await listProducts({ type: "app" });
+  const hardware = (await listProducts({ type: "hardware" })).slice(0, 6);
 
   return (
     <>

@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: "Order confirmed" };
 
 export default async function CheckoutSuccessPage({ params }: { params: Promise<{ orderId: string }> }) {
   const user = await requireUser();
-  const order = getOrder((await params).orderId, user);
+  const order = await getOrder((await params).orderId, user);
   if (!order) notFound();
   const hasApps = order.items.some((item) => item.planId);
 

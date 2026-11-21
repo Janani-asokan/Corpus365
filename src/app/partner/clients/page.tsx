@@ -17,9 +17,9 @@ export const metadata: Metadata = { title: "Clients & leads" };
 
 export default async function PartnerClientsPage() {
   const user = await requireUser(["partner"]);
-  const clients = listPartnerClients(user.id);
-  const leads = listLeads(user.id);
-  const products = listProducts();
+  const clients = await listPartnerClients(user.id);
+  const leads = await listLeads(user.id);
+  const products = await listProducts();
   const productName = new Map(products.map((p) => [p.id, p.name]));
 
   return (

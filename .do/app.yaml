@@ -1,0 +1,63 @@
+# DigitalOcean App Platform spec.
+#   doctl apps create --spec .do/app.yaml          (first time)
+#   doctl apps update <app-id> --spec .do/app.yaml (later changes)
+# Prerequisites (see docs/DEPLOYMENT.md): a Managed PostgreSQL cluster named
+# "corpus365-db" in blr1, and DigitalOcean's GitHub app allowed on the repo.
+name: corpus365
+region: blr # Bengaluru: closest to the Kerala/Bengaluru launch market
+
+databases:
+  - name: db
+    engine: PG
+    production: true
+    cluster_name: corpus365-db
+    db_name: corpus365
+    db_user: corpus365
+
+services:
+  - name: web
+    github:
+      repo: janani-asokan/corpus365
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 3000
+    instance_size_slug: apps-s-1vcpu-1gb
+    instance_count: 1 # always on: no cold starts
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 10
+      period_seconds: 15
+      failure_threshold: 3
+    envs:
+      - { key: APP_URL, scope: RUN_TIME, value: "${APP_URL}" }
+      - { key: DATABASE_URL, scope: RUN_TIME, value: "${db.DATABASE_URL}" }
+      - { key: DATABASE_CA_CERT, scope: RUN_TIME, value: "${db.CA_CERT}" }
+      - { key: DATABASE_POOL_MAX, scope: RUN_TIME, value: "8" }
+      - { key: PAYMENT_PROVIDER, scope: RUN_TIME, value: razorpay }
+      # Secrets: set their values in the control panel (Settings → web → Environment Variables).
+      - { key: RAZORPAY_KEY_ID, scope: RUN_TIME, type: SECRET }
+      - { key: RAZORPAY_KEY_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: RAZORPAY_WEBHOOK_SECRET, scope: RUN_TIME, type: SECRET }
+      - { key: CRON_SECRET, scope: RUN_TIME, type: SECRET }
+
+jobs:
+  # Runs before each new version goes live; a failure aborts the deploy.
+  - name: migrate
+    kind: PRE_DEPLOY
+    github:
+      repo: janani-asokan/corpus365
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    run_command: node dist/migrate.cjs && node dist/bootstrap.cjs
+    envs:
+      - { key: DATABASE_URL, scope: RUN_TIME, value: "${db.DATABASE_URL}" }
+      - { key: DATABASE_CA_CERT, scope: RUN_TIME, value: "${db.CA_CERT}" }
+      - { key: ADMIN_EMAIL, scope: RUN_TIME, type: SECRET }
+      - { key: ADMIN_PASSWORD, scope: RUN_TIME, type: SECRET }
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED

@@ -12,7 +12,7 @@ export const metadata: Metadata = { title: "Orders" };
 
 export default async function AdminOrdersPage() {
   await requireUser(["admin"]);
-  const orders = listAllOrders();
+  const orders = await listAllOrders();
   return (
     <>
       <PageHeader title="Orders" description="All retail, renewal and partner bulk orders (latest 200)." />

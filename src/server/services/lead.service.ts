@@ -3,6 +3,7 @@ import { db } from "@/server/db/client";
 import { leads, products } from "@/server/db/schema";
 import type { LeadStatus } from "@/domain/constants";
 import { UserFacingError } from "@/lib/errors";
+import { isUuid } from "./catalog.service";
 
 export interface LeadInput {
   businessName: string;
@@ -13,31 +14,33 @@ export interface LeadInput {
   notes?: string | null;
 }
 
-export function listLeads(partnerId: string) {
+export async function listLeads(partnerId: string) {
   return db
     .select({ lead: leads, productName: products.name })
     .from(leads)
     .leftJoin(products, eq(products.id, leads.productId))
     .where(eq(leads.partnerId, partnerId))
-    .orderBy(desc(leads.updatedAt))
-    .all();
+    .orderBy(desc(leads.updatedAt));
 }
 
-export function createLead(partnerId: string, input: LeadInput): void {
+export async function createLead(partnerId: string, input: LeadInput): Promise<void> {
   if (!input.email && !input.phone) throw new UserFacingError("Add an email or a phone number so you can follow up.");
-  db.insert(leads).values({ ...input, notes: input.notes ?? null, partnerId }).run();
+  const productId = isUuid(input.productId) ? input.productId : null;
+  await db.insert(leads).values({ ...input, productId, notes: input.notes ?? null, partnerId });
 }
 
 /** Scoped by partner so one partner can never touch another's leads. */
-export function updateLeadStatus(partnerId: string, leadId: string, status: LeadStatus): void {
-  const result = db
+export async function updateLeadStatus(partnerId: string, leadId: string, status: LeadStatus): Promise<void> {
+  if (!isUuid(leadId)) throw new UserFacingError("Lead not found.");
+  const updated = await db
     .update(leads)
-    .set({ status, updatedAt: new Date() })
+    .set({ status })
     .where(and(eq(leads.id, leadId), eq(leads.partnerId, partnerId)))
-    .run();
-  if (result.changes === 0) throw new UserFacingError("Lead not found.");
+    .returning({ id: leads.id });
+  if (updated.length === 0) throw new UserFacingError("Lead not found.");
 }
 
-export function deleteLead(partnerId: string, leadId: string): void {
-  db.delete(leads).where(and(eq(leads.id, leadId), eq(leads.partnerId, partnerId))).run();
+export async function deleteLead(partnerId: string, leadId: string): Promise<void> {
+  if (!isUuid(leadId)) return;
+  await db.delete(leads).where(and(eq(leads.id, leadId), eq(leads.partnerId, partnerId)));
 }

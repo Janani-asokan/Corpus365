@@ -1,12 +1,17 @@
-import { and, desc, eq, lte, sum } from "drizzle-orm";
+import { and, desc, eq, lte, sql, sum } from "drizzle-orm";
 import { db } from "@/server/db/client";
-import { commissions, payouts, users } from "@/server/db/schema";
+import { first, single } from "@/server/db/query";
+import { commissions, partnerProfiles, payouts, users } from "@/server/db/schema";
 import { PROGRAM } from "@/domain/program";
 import { addDays } from "@/domain/pricing";
 import { formatMoney } from "@/domain/money";
 import { getMailer } from "@/server/mail/mailer";
 import { UserFacingError } from "@/lib/errors";
 import { audit } from "./audit.service";
+import { isUuid } from "./catalog.service";
+
+/** Serialises payout runs across all app instances (transaction-scoped advisory lock). */
+const PAYOUT_RUN_LOCK = 3650002;
 
 export function periodOf(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
@@ -17,57 +22,55 @@ export function periodOf(date: Date): string {
  * the refund window) into one payout. Commissions move to "in_payout" so they
  * can never be paid twice.
  */
-export function generatePayouts(adminId: string, now = new Date()): { created: number; total: number } {
+export async function generatePayouts(adminId: string, now = new Date()): Promise<{ created: number; total: number }> {
   const clearedBefore = addDays(now, -PROGRAM.clearanceDays);
   const period = periodOf(now);
 
-  return db.transaction((tx) => {
-    const due = tx
-      .select({ partnerId: commissions.partnerId, amount: sum(commissions.amount) })
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${PAYOUT_RUN_LOCK})`);
+    const cleared = and(eq(commissions.status, "pending"), lte(commissions.createdAt, clearedBefore));
+    const due = await tx
+      .select({ partnerId: commissions.partnerId, amount: sum(commissions.amount).mapWith(Number) })
       .from(commissions)
-      .where(and(eq(commissions.status, "pending"), lte(commissions.createdAt, clearedBefore)))
-      .groupBy(commissions.partnerId)
-      .all();
+      .where(cleared)
+      .groupBy(commissions.partnerId);
 
     let created = 0;
     let total = 0;
     for (const row of due) {
-      const amount = Number(row.amount ?? 0);
-      if (amount <= 0) continue;
-      const payout = tx.insert(payouts).values({ partnerId: row.partnerId, period, amount }).returning().get();
-      tx.update(commissions)
+      if (row.amount <= 0) continue;
+      const payout = await single(tx.insert(payouts).values({ partnerId: row.partnerId, period, amount: row.amount, createdAt: now }).returning());
+      await tx
+        .update(commissions)
         .set({ status: "in_payout", payoutId: payout.id })
-        .where(
-          and(
-            eq(commissions.partnerId, row.partnerId),
-            eq(commissions.status, "pending"),
-            lte(commissions.createdAt, clearedBefore),
-          ),
-        )
-        .run();
+        .where(and(eq(commissions.partnerId, row.partnerId), cleared));
       created += 1;
-      total += amount;
+      total += row.amount;
     }
-    audit(tx, { actorId: adminId, action: "payouts.generated", detail: `${created} payouts for ${period}` });
+    await audit(tx, { actorId: adminId, action: "payouts.generated", detail: `${created} payouts for ${period}` });
     return { created, total };
   });
 }
 
-export async function markPayoutPaid(adminId: string, payoutId: string, reference: string): Promise<void> {
-  const row = db
-    .select({ payout: payouts, email: users.email, name: users.name })
-    .from(payouts)
-    .innerJoin(users, eq(users.id, payouts.partnerId))
-    .where(eq(payouts.id, payoutId))
-    .get();
-  if (!row) throw new UserFacingError("Payout not found.");
-  if (row.payout.status === "paid") throw new UserFacingError("This payout is already marked as paid.");
+export async function markPayoutPaid(adminId: string, payoutId: string, reference: string, now = new Date()): Promise<void> {
+  if (!isUuid(payoutId)) throw new UserFacingError("Payout not found.");
+  const row = await db.transaction(async (tx) => {
+    const found = await first(
+      tx
+        .select({ payout: payouts, email: users.email, name: users.name })
+        .from(payouts)
+        .innerJoin(users, eq(users.id, payouts.partnerId))
+        .where(eq(payouts.id, payoutId))
+        .limit(1)
+        .for("update", { of: payouts }),
+    );
+    if (!found) throw new UserFacingError("Payout not found.");
+    if (found.payout.status === "paid") throw new UserFacingError("This payout is already marked as paid.");
 
-  const now = new Date();
-  db.transaction((tx) => {
-    tx.update(payouts).set({ status: "paid", paidAt: now, reference }).where(eq(payouts.id, payoutId)).run();
-    tx.update(commissions).set({ status: "paid" }).where(eq(commissions.payoutId, payoutId)).run();
-    audit(tx, { actorId: adminId, action: "payout.paid", entityId: payoutId, detail: reference });
+    await tx.update(payouts).set({ status: "paid", paidAt: now, reference }).where(eq(payouts.id, payoutId));
+    await tx.update(commissions).set({ status: "paid" }).where(eq(commissions.payoutId, payoutId));
+    await audit(tx, { actorId: adminId, action: "payout.paid", entityId: payoutId, detail: reference });
+    return found;
   });
 
   await getMailer().send({
@@ -77,12 +80,12 @@ export async function markPayoutPaid(adminId: string, payoutId: string, referenc
   });
 }
 
-export function listPayouts(partnerId?: string) {
+export async function listPayouts(partnerId?: string) {
   return db
-    .select({ payout: payouts, partnerName: users.name, partnerEmail: users.email })
+    .select({ payout: payouts, partnerName: users.name, partnerEmail: users.email, payoutUpi: partnerProfiles.payoutUpi })
     .from(payouts)
     .innerJoin(users, eq(users.id, payouts.partnerId))
+    .leftJoin(partnerProfiles, eq(partnerProfiles.userId, payouts.partnerId))
     .where(partnerId ? eq(payouts.partnerId, partnerId) : undefined)
-    .orderBy(desc(payouts.createdAt))
-    .all();
+    .orderBy(desc(payouts.createdAt));
 }

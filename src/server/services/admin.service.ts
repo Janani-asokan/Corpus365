@@ -1,49 +1,65 @@
-import { and, count, countDistinct, desc, eq, gte, sum } from "drizzle-orm";
+import { count, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/server/db/client";
-import { auditEvents, commissions, orders, partnerProfiles, quoteRequests, subscriptions, users } from "@/server/db/schema";
+import { first } from "@/server/db/query";
+import { auditEvents, commissions, orders, partnerProfiles as pp, quoteRequests, subscriptions, users } from "@/server/db/schema";
 
-export function getAdminMetrics(now = new Date()) {
+/** Dashboard metrics, each aggregated in a single query. */
+export async function getAdminMetrics(now = new Date()) {
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const revenue = db.select({ total: sum(orders.subtotal) }).from(orders).where(eq(orders.status, "paid")).get();
-  const revenueThisMonth = db
-      .select({ total: sum(orders.subtotal) })
-      .from(orders)
-      .where(and(eq(orders.status, "paid"), gte(orders.paidAt, monthStart)))
-      .get();
-  const payingClients = db.select({ value: countDistinct(subscriptions.userId) }).from(subscriptions).where(eq(subscriptions.status, "active")).get();
-  const trials = db.select({ value: count() }).from(subscriptions).where(eq(subscriptions.status, "trialing")).get();
-  const partners = db
-    .select({ status: partnerProfiles.status, value: count() })
-    .from(partnerProfiles)
-    .groupBy(partnerProfiles.status)
-    .all();
-  const commissionTotal = db.select({ total: sum(commissions.amount) }).from(commissions).where(eq(commissions.status, "paid")).get();
-  const commissionOwed = db.select({ total: sum(commissions.amount) }).from(commissions).where(eq(commissions.status, "pending")).get();
-  const openQuotes = db.select({ value: count() }).from(quoteRequests).where(eq(quoteRequests.status, "open")).get();
-  const allCommission = db.select({ total: sum(commissions.amount) }).from(commissions).get();
+  const money = (expr: ReturnType<typeof sql>) => sql<number>`coalesce(${expr}, 0)`.mapWith(Number);
 
-  const revenueTotal = Number(revenue?.total ?? 0);
+  const [revenue, subs, partners, commission, quotes] = await Promise.all([
+    first(
+      db
+        .select({
+          total: money(sql`sum(${orders.subtotal}) filter (where ${orders.status} = 'paid')`),
+          thisMonth: money(sql`sum(${orders.subtotal}) filter (where ${orders.status} = 'paid' and ${orders.paidAt} >= ${monthStart})`),
+        })
+        .from(orders),
+    ),
+    first(
+      db
+        .select({
+          paying: sql<number>`count(distinct ${subscriptions.userId}) filter (where ${subscriptions.status} = 'active')`.mapWith(Number),
+          trials: sql<number>`count(*) filter (where ${subscriptions.status} = 'trialing')`.mapWith(Number),
+        })
+        .from(subscriptions),
+    ),
+    db.select({ status: pp.status, value: count() }).from(pp).groupBy(pp.status),
+    first(
+      db
+        .select({
+          paid: money(sql`sum(${commissions.amount}) filter (where ${commissions.status} = 'paid')`),
+          owed: money(sql`sum(${commissions.amount}) filter (where ${commissions.status} = 'pending')`),
+          all: money(sql`sum(${commissions.amount}) filter (where ${commissions.status} <> 'reversed')`),
+        })
+        .from(commissions),
+    ),
+    first(db.select({ value: count() }).from(quoteRequests).where(eq(quoteRequests.status, "open"))),
+  ]);
+
+  const revenueTotal = revenue?.total ?? 0;
   return {
     revenueTotal,
-    revenueThisMonth: Number(revenueThisMonth?.total ?? 0),
-    payingClients: payingClients?.value ?? 0,
-    trials: trials?.value ?? 0,
+    revenueThisMonth: revenue?.thisMonth ?? 0,
+    payingClients: subs?.paying ?? 0,
+    trials: subs?.trials ?? 0,
     partnersApproved: partners.find((p) => p.status === "approved")?.value ?? 0,
     partnersPending: partners.find((p) => p.status === "pending")?.value ?? 0,
-    commissionPaid: Number(commissionTotal?.total ?? 0),
-    commissionOwed: Number(commissionOwed?.total ?? 0),
+    commissionPaid: commission?.paid ?? 0,
+    commissionOwed: commission?.owed ?? 0,
     /** Channel cost of revenue (target < 30%). */
-    channelCostShare: revenueTotal > 0 ? Number(allCommission?.total ?? 0) / revenueTotal : 0,
-    openQuotes: openQuotes?.value ?? 0,
+    channelCostShare: revenueTotal > 0 ? (commission?.all ?? 0) / revenueTotal : 0,
+    openQuotes: quotes?.value ?? 0,
   };
 }
 
-export function listRecentAudit(limit = 20) {
+export async function listRecentAudit(limit = 20) {
   return db
     .select({ event: auditEvents, actor: users.name })
     .from(auditEvents)
     .leftJoin(users, eq(users.id, auditEvents.actorId))
     .orderBy(desc(auditEvents.createdAt))
-    .limit(limit)
-    .all();
+    .limit(limit);
 }
+
