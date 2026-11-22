@@ -1,0 +1,5 @@
+# Automatic HTTPS (Let's Encrypt) for SITE_ADDRESS, e.g. 203-0-113-7.sslip.io or corpus365.in
+{$SITE_ADDRESS} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}

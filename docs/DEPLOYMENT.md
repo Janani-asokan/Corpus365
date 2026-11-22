@@ -1,4 +1,6 @@
-# Deploying to DigitalOcean
+# Deploying to DigitalOcean (App Platform + Managed PostgreSQL)
+
+> On a tight budget? See **[DROPLET.md](DROPLET.md)** for a single $6/month Droplet running everything.
 
 Production runs on **DigitalOcean App Platform** (the app, always on) with **DigitalOcean Managed PostgreSQL 16** (the database), both in Bengaluru (`blr1`). The whole setup is described in `.do/app.yaml`.
 
@@ -27,7 +29,7 @@ GitHub Actions ── daily ──▶ POST /api/cron/billing        Razorpay ─
    ```
    Or use Apps → Create → "Import from app spec", then upload `.do/app.yaml`.
 
-   App Platform creates the database and user inside the cluster, injects `DATABASE_URL` and `DATABASE_CA_CERT`, and adds the app to the database's **trusted sources**, so nothing else on the internet can reach it.
+   **Before this step**, create the database `corpus365` and the user `corpus365` inside the cluster: Databases → corpus365-db → **Users & Databases**. For a production cluster, App Platform expects both to exist already and fails the deploy with "database user was not found" if they don't. App Platform then injects `DATABASE_URL` and `DATABASE_CA_CERT`. Under the cluster's **Trusted sources**, add the app so nothing else on the internet can reach the database.
 4. **Secrets.** In the app's Settings, set these values (they are encrypted at rest):
 
    | Variable | Where | Value |
