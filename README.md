@@ -4,6 +4,8 @@ Business software for every business, sold and supported by people near you.
 
 A two-sided marketplace: **businesses** browse apps and hardware, start free trials, subscribe and renew; **Channel Partners** share a referral link or code, track clients and leads, and earn commission on every sale and every renewal; **admins** approve partners, run billing and pay partners monthly.
 
+[![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/Janani-asokan/Corpus365/tree/main)
+
 ## Quick start
 
 Requires Node.js 22+ and PostgreSQL 16.
@@ -16,7 +18,7 @@ npm run setup                      # migrate + load demo data
 npm run dev                        # http://localhost:3000
 ```
 
-Production runs on DigitalOcean (App Platform plus Managed PostgreSQL). See **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The schema and its guarantees are described in **[docs/DATABASE.md](docs/DATABASE.md)**.
+**Hosting:** the button above deploys the app with its database to DigitalOcean. Sign in, allow GitHub access, and fill in the secrets it asks for (Razorpay keys, `CRON_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`). The full production setup, on a Managed PostgreSQL cluster, is in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The schema and its guarantees are described in **[docs/DATABASE.md](docs/DATABASE.md)**.
 
 Demo accounts (seed data):
 

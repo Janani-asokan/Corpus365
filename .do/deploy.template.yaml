@@ -1,0 +1,52 @@
+# Template for the "Deploy to DigitalOcean" button in the README.
+# It creates everything in one go, including a PostgreSQL database.
+# For a larger production setup, move to the Managed PostgreSQL cluster
+# described in .do/app.yaml and docs/DEPLOYMENT.md.
+spec:
+  name: corpus365
+  region: blr # Bengaluru
+
+  databases:
+    - name: db
+      engine: PG
+      production: false
+
+  services:
+    - name: web
+      github:
+        repo: Janani-asokan/Corpus365
+        branch: main
+        deploy_on_push: true
+      dockerfile_path: Dockerfile
+      http_port: 3000
+      instance_size_slug: apps-s-1vcpu-1gb
+      instance_count: 1
+      health_check:
+        http_path: /api/health
+        initial_delay_seconds: 10
+      envs:
+        - { key: APP_URL, scope: RUN_TIME, value: "${APP_URL}" }
+        - { key: DATABASE_URL, scope: RUN_TIME, value: "${db.DATABASE_URL}" }
+        - { key: DATABASE_CA_CERT, scope: RUN_TIME, value: "${db.CA_CERT}" }
+        - { key: DATABASE_POOL_MAX, scope: RUN_TIME, value: "5" }
+        - { key: PAYMENT_PROVIDER, scope: RUN_TIME, value: razorpay }
+        - { key: RAZORPAY_KEY_ID, scope: RUN_TIME, type: SECRET }
+        - { key: RAZORPAY_KEY_SECRET, scope: RUN_TIME, type: SECRET }
+        - { key: RAZORPAY_WEBHOOK_SECRET, scope: RUN_TIME, type: SECRET }
+        - { key: CRON_SECRET, scope: RUN_TIME, type: SECRET }
+
+  jobs:
+    - name: migrate
+      kind: PRE_DEPLOY
+      github:
+        repo: Janani-asokan/Corpus365
+        branch: main
+        deploy_on_push: true
+      dockerfile_path: Dockerfile
+      instance_size_slug: apps-s-1vcpu-0.5gb
+      run_command: node dist/migrate.cjs && node dist/bootstrap.cjs
+      envs:
+        - { key: DATABASE_URL, scope: RUN_TIME, value: "${db.DATABASE_URL}" }
+        - { key: DATABASE_CA_CERT, scope: RUN_TIME, value: "${db.CA_CERT}" }
+        - { key: ADMIN_EMAIL, scope: RUN_TIME, type: SECRET }
+        - { key: ADMIN_PASSWORD, scope: RUN_TIME, type: SECRET }
