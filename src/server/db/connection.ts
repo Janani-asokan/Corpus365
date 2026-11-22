@@ -27,7 +27,8 @@ export function poolConfig(env: NodeJS.ProcessEnv = process.env): PoolConfig {
   return {
     connectionString: url.toString(),
     ssl,
-    max: Number(env.DATABASE_POOL_MAX ?? 10),
+    // Serverless platforms (Vercel) run many small instances: keep each pool tiny.
+    max: Number(env.DATABASE_POOL_MAX ?? (env.VERCEL ? 3 : 10)),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
     application_name: "corpus365",

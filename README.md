@@ -18,7 +18,9 @@ npm run setup                      # migrate + load demo data
 npm run dev                        # http://localhost:3000
 ```
 
-**Hosting:** the button above deploys the app with its database to DigitalOcean. Sign in, allow GitHub access, and fill in the secrets it asks for (Razorpay keys, `CRON_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`). The full production setup, on a Managed PostgreSQL cluster, is in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The schema and its guarantees are described in **[docs/DATABASE.md](docs/DATABASE.md)**.
+**Free hosting** (demos and pilot): Vercel + Neon, about 10 minutes. See **[docs/FREE_HOSTING.md](docs/FREE_HOSTING.md)**.
+
+**Paid hosting:** the button above deploys the app with its database to DigitalOcean. Sign in, allow GitHub access, and fill in the secrets it asks for (Razorpay keys, `CRON_SECRET`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`). The full production setup, on a Managed PostgreSQL cluster, is in **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The schema and its guarantees are described in **[docs/DATABASE.md](docs/DATABASE.md)**.
 
 Demo accounts (seed data):
 
