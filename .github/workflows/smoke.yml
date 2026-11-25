@@ -1,0 +1,36 @@
+# Checks a deployed site from the public internet. Run from the Actions tab
+# (or automatically after deploys) with the site URL.
+name: Smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Site URL, e.g. https://165-232-188-227.sslip.io
+        required: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check the site
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          set -u
+          host=$(echo "$URL" | sed -E 's#https?://([^/]+).*#\1#')
+          echo "DNS: $(getent hosts "$host" || echo 'does not resolve')"
+          echo "--- TCP ports"
+          for p in 80 443; do timeout 5 bash -c "</dev/tcp/$host/$p" 2>/dev/null && echo "port $p open" || echo "port $p CLOSED"; done
+          echo "--- HTTP (port 80)"
+          curl -sS -o /dev/null -w "http://$host -> %{http_code} %{redirect_url}\n" --max-time 15 "http://$host" || true
+          echo "--- HTTPS"
+          fail=0
+          for path in /api/health / /marketplace /partners /login; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 20 "$URL$path" || echo "ERR")
+            echo "$path -> $code"; [ "$code" = "200" ] || fail=1
+          done
+          echo "--- health body: $(curl -sS --max-time 10 "$URL/api/health" || true)"
+          echo "--- TLS: $(echo | timeout 10 openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null | openssl x509 -noout -issuer -enddate 2>/dev/null || echo 'no certificate')"
+          exit $fail
