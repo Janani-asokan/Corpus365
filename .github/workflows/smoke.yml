@@ -25,6 +25,8 @@ jobs:
           for p in 80 443; do timeout 5 bash -c "</dev/tcp/$host/$p" 2>/dev/null && echo "port $p open" || echo "port $p CLOSED"; done
           echo "--- HTTP (port 80)"
           curl -sS -o /dev/null -w "http://$host -> %{http_code} %{redirect_url}\n" --max-time 15 "http://$host" || true
+          echo "--- setup progress (only while the server is still setting up):"
+          curl -sS --max-time 10 "http://$host/status.txt" 2>/dev/null | tail -15 || echo "(none)"
           echo "--- HTTPS"
           fail=0
           for path in /api/health / /marketplace /partners /login; do

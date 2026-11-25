@@ -7,7 +7,7 @@ Internet ──443──▶ Caddy (automatic HTTPS) ──▶ app (Next.js) ─�
 cron: auto-deploy from GitHub main every 5 min · daily billing · nightly DB backup (7 days)
 ```
 
-Files: `deploy/droplet/` holds `cloud-init.sh` (first boot), `docker-compose.yml`, `Caddyfile`, `deploy.sh` and `backup.sh`.
+Files: `deploy/droplet/` holds `cloud-init.sh` (user data that hands over to `setup.sh`), `setup.sh` (first boot, with a progress page at `http://<server>/status.txt` while it runs), `docker-compose.yml`, `Caddyfile`, `deploy.sh` and `backup.sh`.
 
 ## What first boot does
 

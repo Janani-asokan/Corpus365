@@ -15,9 +15,14 @@ echo "$(date -Is) deploying $(git rev-parse --short HEAD)"
 
 COMPOSE="docker compose -f deploy/droplet/docker-compose.yml --env-file .env"
 $COMPOSE build app
-$COMPOSE up -d db
+# Wait until PostgreSQL is healthy: on first boot it needs a few seconds to initialise.
+$COMPOSE up -d --wait db
 # Upgrade the schema before the new code takes traffic; a failure keeps the old version running.
-$COMPOSE run --rm --no-deps app sh -c "node dist/migrate.cjs && node dist/bootstrap.cjs"
+for attempt in 1 2 3; do
+  $COMPOSE run --rm --no-deps app sh -c "node dist/migrate.cjs && node dist/bootstrap.cjs" && break
+  [ "$attempt" = 3 ] && exit 1
+  echo "migration attempt $attempt failed; retrying"; sleep 5
+done
 $COMPOSE up -d --remove-orphans
 docker image prune -f >/dev/null
 echo "$(date -Is) deployed"
