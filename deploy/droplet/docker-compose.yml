@@ -43,6 +43,8 @@ services:
     ports: ["80:80", "443:443", "443:443/udp"]
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?set in .env}
+      # Older .env files have no PRIMARY_HOST; then the single SITE_ADDRESS is primary.
+      PRIMARY_HOST: ${PRIMARY_HOST:-${SITE_ADDRESS}}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

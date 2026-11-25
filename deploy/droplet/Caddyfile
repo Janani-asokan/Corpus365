@@ -1,5 +1,9 @@
-# Automatic HTTPS (Let's Encrypt) for SITE_ADDRESS, e.g. 203-0-113-7.sslip.io or corpus365.in
+# Automatic HTTPS (Let's Encrypt) for every address in SITE_ADDRESS.
+# Any host other than PRIMARY_HOST (www., other domains) redirects to it.
 {$SITE_ADDRESS} {
+	@secondary not host {$PRIMARY_HOST}
+	redir @secondary https://{$PRIMARY_HOST}{uri} permanent
+
 	encode zstd gzip
 	reverse_proxy app:3000
 }

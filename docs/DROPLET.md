@@ -23,6 +23,17 @@ cat /root/corpus365-admin.txt
 ```
 Change the password after signing in, then remove `ADMIN_PASSWORD` from `.env`.
 
+## Using your own domain
+
+1. At your domain registrar (e.g. GoDaddy → Domain → **DNS**), for **each** domain:
+   - set the `A` record for `@` to the server's IP, replacing any "Parked" record;
+   - set `www` to the same IP (an `A` record) or as a `CNAME` to `@`.
+2. In the Droplet console, run, with the main domain first:
+   ```bash
+   /opt/corpus365/deploy/droplet/set-domain.sh corpus365.com corpus365.in corpus365.co.in
+   ```
+   It checks the DNS, updates `.env`, and restarts the site. Every domain and its `www.` gets its own HTTPS certificate, and everything redirects to the first domain.
+
 ## Day-to-day
 
 | Task | How |

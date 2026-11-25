@@ -44,6 +44,7 @@ if [ ! -f .env ]; then
   cat > .env <<ENV
 # Corpus365 production settings. Edit, then run: /opt/corpus365/deploy/droplet/deploy.sh --force
 SITE_ADDRESS=$SITE
+PRIMARY_HOST=$SITE
 APP_URL=https://$SITE
 POSTGRES_PASSWORD=$(rand)
 ADMIN_EMAIL=$ADMIN_EMAIL
